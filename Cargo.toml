@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/igs-iec104-codec",
+    "crates/igs-iec104-link",
+    "crates/igs-iec104",
+    "xtask",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/aklira/igs-iec104"

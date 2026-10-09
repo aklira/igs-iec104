@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "igs-iec104"
+version = "0.1.0"
+description = "Async IEC 60870-5-104 client and server with redundancy and TLS."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
+igs-iec104-link = { path = "../igs-iec104-link", version = "0.1.0" }
+
+[[bin]]
+name = "igs104-client"
+path = "src/bin/igs104_client.rs"
+
+[[bin]]
+name = "igs104-server"
+path = "src/bin/igs104_server.rs"
