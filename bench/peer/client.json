@@ -1,0 +1,51 @@
+{
+  "name": "refclient",
+  "type": "south",
+  "plugin": "iec104",
+  "config": {
+    "protocol_stack": {
+      "protocol_stack": {
+        "name": "bench-ref-client",
+        "version": "1.0",
+        "transport_layer": {
+          "redundancy_groups": [
+            {
+              "connections": [{ "srv_ip": "172.31.104.10", "port": 2404 }],
+              "rg_name": "bench",
+              "tls": false,
+              "k_value": 12,
+              "w_value": 8,
+              "t0_timeout": 10,
+              "t1_timeout": 15,
+              "t2_timeout": 10,
+              "t3_timeout": 20
+            }
+          ]
+        },
+        "application_layer": {
+          "orig_addr": 10,
+          "ca_asdu_size": 2,
+          "ioaddr_size": 3,
+          "asdu_size": 0,
+          "gi_time": 60,
+          "gi_cycle": 60,
+          "gi_all_ca": false,
+          "utc_time": false,
+          "cmd_wttag": false,
+          "cmd_parallel": 0,
+          "time_sync": 0
+        }
+      }
+    },
+    "exchanged_data": {
+      "exchanged_data": {
+        "name": "bench-ref-client",
+        "version": "1.0",
+        "datapoints": [
+          { "label": "TS1", "protocols": [{ "name": "iec104", "address": "45-672", "typeid": "M_SP_NA_1" }] },
+          { "label": "TM1", "protocols": [{ "name": "iec104", "address": "45-984", "typeid": "M_ME_NA_1" }] }
+        ]
+      }
+    }
+  }
+}
