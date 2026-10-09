@@ -11,9 +11,10 @@
 # Fixed addresses: the reference client is configured with the server IP.
 
 x-fledgepower: &fledgepower
-  image: ghcr.io/aklira/fledgepower/fledge@sha256:9191e191572d26d8c3ad197e2362f706873f87e609637ce6994bc17766b9404e
-  # The image's own start script does not complete on Fledge 3.1; the bench
-  # starts Fledge and creates exactly one service from a JSON definition.
+  image: ghcr.io/aklira/fledgepower/fledge@sha256:0fcb16a7b88cef1e0f59065612f1b6b99bc16d63d39f797812be94df4092d8f1
+  # The image's own start script builds a full gateway (south, north, kafka
+  # and a control pipeline); the bench instead starts Fledge and creates
+  # exactly one service per container from a JSON definition.
   entrypoint: ["/bin/bash", "/bench/peer/bootstrap.sh"]
   volumes:
     - ./peer:/bench/peer:ro

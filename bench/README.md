@@ -14,15 +14,17 @@ enters this repository.
 | Reference client | `ref-client` | 172.31.104.21 | FledgePower, IEC 104 south plugin |
 
 Both use the maintainer-approved image
-`ghcr.io/aklira/fledgepower/fledge:v1.2.3`, pinned by digest in
+`ghcr.io/aklira/fledgepower/fledge:v1.2.4`, pinned by digest in
 `docker-compose.yml`. Fledge and FledgePower are Apache-2.0; their IEC 104
 plugins are built on a third-party IEC 104 stack that is GPLv3 or
 commercial. The bench only runs that image as a separate process and never
 links it, so the licence does not reach this repository.
 
 Each peer is started by `peer/bootstrap.sh`, not by the image's own start
-script. The bootstrap starts Fledge and creates a single service from
-`peer/server.json` or `peer/client.json`. It writes `/tmp/bench-ready` once
+script, which builds a complete gateway (south and north IEC 104, Kafka and
+a control pipeline) that the bench does not need. The bootstrap starts
+Fledge and creates a single service from `peer/server.json` or
+`peer/client.json`. It writes `/tmp/bench-ready` once
 the service is running.
 
 ## Capture and decoding

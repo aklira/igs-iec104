@@ -36,7 +36,7 @@ Not standard ambiguities (none encountered in phase 0 so far), but project
 decisions:
 
 1. ~~F4 gate: which reference peer image, which licence?~~ Resolved: FledgePower
-   image `ghcr.io/aklira/fledgepower/fledge:v1.2.3`, black-box use (see
+   image `ghcr.io/aklira/fledgepower/fledge` (v1.2.3, then v1.2.4), black-box use (see
    `docs/ai-log/F4.md`).
 2. Is the pending `.gitignore` change (ignoring `AGENTS.md`,
    `IMPLEMENTATION.md`, `opencode.json`) wanted? It contradicts the plan of
@@ -47,8 +47,8 @@ decisions:
 ## Notes for the next tasks
 
 - The interop bench runs with `python3 -m pytest` in `bench/` (Docker or
-  Podman). The image's own start script fails on Fledge 3.1; the bench uses
-  `bench/peer/bootstrap.sh` instead.
+  Podman). It pins FledgePower v1.2.4 by digest and starts each peer with
+  `bench/peer/bootstrap.sh` (one service per container).
 
 - The generated profile is ready for C1-C4. C1 primitive formats can start
   (depends on F3 only). `object_size_bits(125) == None` must be handled when
