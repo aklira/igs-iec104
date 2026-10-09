@@ -378,7 +378,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | F2 Continuous integration | [ ] |
 | F3 Code generation from the profile | [ ] |
 | F4 Interop bench skeleton ⛔ | [ ] |
-| F5 AI log and questions | [ ] |
+| F5 AI log and questions | [x] |
 | C1 Primitive formats | [ ] |
 | C2 Information elements | [ ] |
 | C3 ASDU header | [ ] |
