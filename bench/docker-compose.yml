@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Interop bench. Reference peers run as separate containers and are used as
+# black boxes only (IMPLEMENTATION.md section 1, rule 1). Both peers use the
+# same FledgePower image: its IEC 104 north plugin is the reference server,
+# its IEC 104 south plugin is the reference client. Image and licence were
+# approved by a maintainer (task F4, see docs/ai-log/F4.md).
+#
+# Fixed addresses: the reference client is configured with the server IP.
+
+x-fledgepower: &fledgepower
+  image: ghcr.io/aklira/fledgepower/fledge@sha256:9191e191572d26d8c3ad197e2362f706873f87e609637ce6994bc17766b9404e
+  # The image's own start script does not complete on Fledge 3.1; the bench
+  # starts Fledge and creates exactly one service from a JSON definition.
+  entrypoint: ["/bin/bash", "/bench/peer/bootstrap.sh"]
+  volumes:
+    - ./peer:/bench/peer:ro
+
+services:
+  ref-server:
+    <<: *fledgepower
+    command: ["/bench/peer/server.json"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.10
+
+  ref-client:
+    <<: *fledgepower
+    command: ["/bench/peer/client.json"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.21
+
+  # Shares the network namespace of the reference server so that it sees
+  # every frame the server sends and receives. tcpdump writes packet by
+  # packet to captures/$BENCH_CAPTURE; the container outlives it so that the
+  # helpers can stop it (`pkill tcpdump`) and then run tshark with `exec`.
+  capture:
+    image: docker.io/nicolaka/netshoot@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
+    network_mode: "service:ref-server"
+    depends_on:
+      - ref-server
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      BENCH_CAPTURE: ${BENCH_CAPTURE:-bench.pcap}
+    command:
+      - sh
+      - -c
+      - tcpdump -i any -U -Z root -w "/captures/$$BENCH_CAPTURE" tcp port 2404 & exec sleep infinity
+    volumes:
+      - ./captures:/captures
+
+networks:
+  bench:
+    ipam:
+      config:
+        - subnet: 172.31.104.0/24

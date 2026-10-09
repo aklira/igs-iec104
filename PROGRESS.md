@@ -12,7 +12,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | F2 Continuous integration | Done, committed | `8f179a8`, log `docs/ai-log/F2.md` |
 | F3 Code generation | Done, committed `bd7afd5` | log `docs/ai-log/F3.md` |
 | F5 AI log and questions | Done, committed | `091cf52`, log `docs/ai-log/F5.md` |
-| F4 Interop bench skeleton | Blocked, human gate | needs maintainer to approve the reference peer image and licence |
+| F4 Interop bench skeleton | Done, committed | log `docs/ai-log/F4.md` |
 
 ## Decisions taken (beyond the plan)
 
@@ -35,8 +35,9 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 Not standard ambiguities (none encountered in phase 0 so far), but project
 decisions:
 
-1. F4 gate: which reference peer image, which licence? Bench stays blocked
-   until then.
+1. ~~F4 gate: which reference peer image, which licence?~~ Resolved: FledgePower
+   image `ghcr.io/aklira/fledgepower/fledge:v1.2.3`, black-box use (see
+   `docs/ai-log/F4.md`).
 2. Is the pending `.gitignore` change (ignoring `AGENTS.md`,
    `IMPLEMENTATION.md`, `opencode.json`) wanted? It contradicts the plan of
    record being tracked.
@@ -44,6 +45,10 @@ decisions:
    until then.
 
 ## Notes for the next tasks
+
+- The interop bench runs with `python3 -m pytest` in `bench/` (Docker or
+  Podman). The image's own start script fails on Fledge 3.1; the bench uses
+  `bench/peer/bootstrap.sh` instead.
 
 - The generated profile is ready for C1-C4. C1 primitive formats can start
   (depends on F3 only). `object_size_bits(125) == None` must be handled when
