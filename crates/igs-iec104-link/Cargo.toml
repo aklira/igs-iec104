@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "igs-iec104-link"
+version = "0.1.0"
+description = "Sans-I/O APCI session state machine for IEC 60870-5-104: no I/O."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+
+[dependencies]
+igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
