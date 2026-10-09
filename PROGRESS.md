@@ -36,7 +36,7 @@ Not standard ambiguities (none encountered in phase 0 so far), but project
 decisions:
 
 1. ~~F4 gate: which reference peer image, which licence?~~ Resolved: FledgePower
-   image `ghcr.io/aklira/fledgepower/fledge` (v1.2.3, then v1.2.4), black-box use (see
+   image `ghcr.io/aklira/fledgepower/fledge:v1.2.4`, black-box use (see
    `docs/ai-log/F4.md`).
 2. Is the pending `.gitignore` change (ignoring `AGENTS.md`,
    `IMPLEMENTATION.md`, `opencode.json`) wanted? It contradicts the plan of
