@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runs the standard gate of IMPLEMENTATION.md section 1 plus a coverage
+# report. The repository must build without docs/spec/ (the licensed
+# standards are not present in CI).
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: standard gate (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-llvm-cov
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features
+
+      - name: Coverage (report only)
+        run: cargo llvm-cov --workspace --all-features --summary-only
+
+      - name: Deny
+        run: cargo deny check
