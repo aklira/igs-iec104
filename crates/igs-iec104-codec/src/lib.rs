@@ -16,3 +16,6 @@
         clippy::arithmetic_side_effects
     )
 )]
+
+/// Constants generated from the profile data files; see the banner inside.
+pub mod generated;
