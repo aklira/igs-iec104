@@ -28,6 +28,9 @@ igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
 igs-iec104-link = { path = "../igs-iec104-link", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+# serde and toml read the points file of igs104-server (task S4, approved by the maintainer).
+serde = { version = "1", features = ["derive"] }
+toml = "1"
 # rustls with the ring provider (task X1). ring is Apache-2.0 AND ISC; it adds a second windows-sys,
 # which cargo deny reports as a duplicate warning.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }

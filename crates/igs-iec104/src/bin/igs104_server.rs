@@ -6,9 +6,9 @@
 //! points, changes their values as a simulation says, and accepts the commands of the points
 //! that take them. It is the device under test of the interop bench.
 //!
-//! The points come from the built-in demo set (see `points.rs`). The station listens on the
-//! standard port 2404 unless `--bind` says otherwise, and runs until the process is stopped, or
-//! for the seconds of `--for`.
+//! The points come from the built-in demo set, or from a TOML file given with `--points` (see
+//! `points.rs`). The station listens on the standard port 2404 unless `--bind` says otherwise, and
+//! runs until the process is stopped, or for the seconds of `--for`.
 
 #[path = "igs104_server/handler.rs"]
 mod handler;
@@ -16,6 +16,7 @@ mod handler;
 mod points;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -41,6 +42,10 @@ struct Cli {
     /// Stops after this many seconds. Without it, runs until the process is stopped.
     #[arg(long = "for")]
     duration: Option<u64>,
+    /// A TOML file with the points of the station (see docs/igs104-server.md). Without it, the
+    /// built-in demo points are served.
+    #[arg(short, long, value_name = "FILE")]
+    points: Option<PathBuf>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -60,7 +65,14 @@ async fn run(cli: Cli) -> Result<(), String> {
     if common == CommonAddress::GLOBAL {
         return Err("the global common address cannot name the station".to_string());
     }
-    let points = points::demo();
+    let points = match &cli.points {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            points::parse(&text)?
+        }
+        None => points::demo(),
+    };
     points::validate(&points).map_err(|error| error.to_string())?;
 
     let server = Server::bind(ServerConfig::new(cli.bind, common), Demo::new(&points))

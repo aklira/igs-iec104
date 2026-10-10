@@ -17,9 +17,11 @@ use igs_iec104_codec::elements::{
     Bcr, Diq, DoublePoint, Nva, Qds, QualityFlags, ShortFloat, Siq, Sva,
 };
 use igs_iec104_codec::header::InformationObjectAddress;
+use serde::Deserialize;
 
 /// The type of a point of the demo station (the monitoring types of the process image).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// Single-point information (M_SP).
     Single,
@@ -162,6 +164,109 @@ pub fn validate(points: &[PointSpec]) -> Result<(), PointError> {
         }
     }
     Ok(())
+}
+
+/// The points of a TOML file: one `[[point]]` table per point, with the fields of [`Entry`]. The
+/// file must hold at least one point. The points are not checked here: [`validate`] does that.
+pub fn parse(text: &str) -> Result<Vec<PointSpec>, String> {
+    let file: File = toml::from_str(text).map_err(|error| error.to_string())?;
+    if file.point.is_empty() {
+        return Err("the file holds no [[point]] table".to_string());
+    }
+    file.point.into_iter().map(Entry::into_spec).collect()
+}
+
+/// The top level of the file.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    #[serde(default)]
+    point: Vec<Entry>,
+}
+
+/// One point of the file. `simulation` names the motion; `period_ms` and `increment` are the
+/// numbers that the motion needs, and the others are refused.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Entry {
+    address: u32,
+    kind: Kind,
+    #[serde(default)]
+    stamped: bool,
+    group: Option<u8>,
+    #[serde(default)]
+    command: bool,
+    #[serde(default)]
+    simulation: Motion,
+    period_ms: Option<u64>,
+    increment: Option<i64>,
+}
+
+/// The motion of a point, as the file names it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Motion {
+    /// No motion: the file gives no period and no increment.
+    #[default]
+    Constant,
+    /// Toggles every `period_ms`.
+    Toggle,
+    /// Moves by `increment` every `period_ms`.
+    Ramp,
+    /// Counts `increment` more every `period_ms`.
+    Count,
+}
+
+impl Entry {
+    /// The point, with its simulation. A number that the motion does not use is an error, so that
+    /// a misplaced field is seen rather than ignored.
+    fn into_spec(self) -> Result<PointSpec, String> {
+        let address = self.address;
+        let period = self.period_ms.map(Duration::from_millis);
+        let simulation = match self.simulation {
+            Motion::Constant => {
+                if period.is_some() || self.increment.is_some() {
+                    return Err(format!(
+                        "point {address}: a constant point takes no period_ms or increment"
+                    ));
+                }
+                Simulation::Constant
+            }
+            Motion::Toggle => {
+                if self.increment.is_some() {
+                    return Err(format!("point {address}: a toggle takes no increment"));
+                }
+                Simulation::Toggle {
+                    period: required(address, period, "period_ms")?,
+                }
+            }
+            Motion::Ramp => Simulation::Ramp {
+                period: required(address, period, "period_ms")?,
+                increment: required(address, self.increment, "increment")?
+                    .try_into()
+                    .map_err(|_| format!("point {address}: the ramp increment is 32-bit"))?,
+            },
+            Motion::Count => Simulation::Count {
+                period: required(address, period, "period_ms")?,
+                increment: required(address, self.increment, "increment")?
+                    .try_into()
+                    .map_err(|_| format!("point {address}: the count increment is 0 to 2^32-1"))?,
+            },
+        };
+        Ok(PointSpec {
+            address,
+            kind: self.kind,
+            stamped: self.stamped,
+            group: self.group,
+            command: self.command,
+            simulation,
+        })
+    }
+}
+
+/// The value of a field that the motion needs.
+fn required<T>(address: u32, value: Option<T>, field: &str) -> Result<T, String> {
+    value.ok_or_else(|| format!("point {address}: the motion needs {field}"))
 }
 
 /// The value of a point after `step` changes. `None` when the simulation does not fit the type
@@ -321,6 +426,52 @@ mod tests {
             command: false,
             simulation,
         }
+    }
+
+    #[test]
+    fn the_example_file_is_the_demo_set() {
+        let parsed = parse(include_str!(
+            "../../../../../docs/igs104-server.points.toml"
+        ))
+        .expect("the example parses");
+        assert_eq!(parsed, demo());
+    }
+
+    #[test]
+    fn an_unknown_key_or_kind_is_refused() {
+        let colour = parse("[[point]]\naddress = 1\nkind = \"single\"\ncolour = \"red\"\n");
+        assert!(colour.is_err_and(|error| error.contains("colour")));
+        let kind = parse("[[point]]\naddress = 1\nkind = \"ring\"\n");
+        assert!(kind.is_err_and(|error| error.contains("ring")));
+    }
+
+    #[test]
+    fn each_motion_takes_its_own_numbers_and_no_other() {
+        let missing = parse("[[point]]\naddress = 1\nkind = \"single\"\nsimulation = \"toggle\"\n");
+        assert!(missing.is_err_and(|error| error.contains("period_ms")));
+        let stray = parse("[[point]]\naddress = 1\nkind = \"single\"\nperiod_ms = 5\n");
+        assert!(stray.is_err_and(|error| error.contains("constant")));
+        let increment = parse("[[point]]\naddress = 1\nkind = \"single\"\nsimulation = \"toggle\"\nperiod_ms = 5\nincrement = 1\n");
+        assert!(increment.is_err_and(|error| error.contains("increment")));
+    }
+
+    #[test]
+    fn an_increment_must_fit_its_type() {
+        let ramp = parse("[[point]]\naddress = 1\nkind = \"float\"\nsimulation = \"ramp\"\nperiod_ms = 5\nincrement = 3000000000\n");
+        assert!(ramp.is_err_and(|error| error.contains("32-bit")));
+        let count = parse("[[point]]\naddress = 1\nkind = \"counter\"\nsimulation = \"count\"\nperiod_ms = 5\nincrement = -1\n");
+        assert!(count.is_err_and(|error| error.contains("count increment")));
+    }
+
+    #[test]
+    fn a_file_must_hold_a_point() {
+        assert!(parse("").is_err_and(|error| error.contains("no [[point]]")));
+    }
+
+    #[test]
+    fn a_duplicate_address_is_caught_by_the_checks() {
+        let points = parse("[[point]]\naddress = 1\nkind = \"single\"\n[[point]]\naddress = 1\nkind = \"double\"\n").expect("both parse");
+        assert_eq!(validate(&points), Err(PointError::Duplicate(1)));
     }
 
     #[test]
