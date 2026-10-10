@@ -23,6 +23,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | L1 Parameters | Done, committed | log `docs/ai-log/L1.md`, decision D-012 in `PROVENANCE.md` (recommendations are warnings) |
 | L2 State machine core | Done, committed `c543252`: both roles follow figures 17 and 18 (figure 18 read from the PDF page 51); window, wrap-around and N(R) checks tested with a fake clock | log `docs/ai-log/L2.md`; open questions Q-007 and Q-008 in `QUESTIONS.md` |
 | L3 Timers and tests | Done, not committed: t1, t2 and t3 with fake-clock tests; `Session::new` takes the establishment instant and `next_deadline()` replaces a wake-up action | log `docs/ai-log/L3.md`; open questions Q-009 to Q-013 in `QUESTIONS.md` (figures 12 to 14 missing from the prepared text) |
+| T1 Transport | Done, not committed: async driver over `tokio::net::TcpStream` with t0 connect timeout, clean shutdown and typed errors; generic `Transport` bound for TLS; `Delivery::Transfer` reports the state of the data transfer | log `docs/ai-log/T1.md`; tests: 12 in `igs-iec104` (in memory on a paused clock, and TCP loopback) |
 
 ## Decisions taken (beyond the plan)
 
@@ -70,6 +71,8 @@ decisions:
 - L1 (parameters) is done: `LinkConfig` in `igs-iec104-link`.
 - L2 (state machine core) is committed. Q-003, Q-005 and Q-006 are decided (D-013: the
   connection closes). Q-007 and Q-008 stay open.
+- T1 (transport) is done in the working tree, not committed. L4 (interop APCI) is a
+  maintainer gate and waits for T1's commit and a go-ahead.
 - L3 (timers) is done in the working tree, not committed. Its questions Q-009 to Q-013
   rest on figures 12 to 14, which are missing from the prepared text. The figures are
   for a maintainer to read before the reaction is confirmed.
