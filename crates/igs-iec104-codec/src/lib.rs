@@ -7,6 +7,7 @@
 //! This crate performs no I/O. See IMPLEMENTATION.md section 2.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 #![cfg_attr(
     test,
     allow(

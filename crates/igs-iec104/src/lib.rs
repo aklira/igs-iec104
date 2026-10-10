@@ -11,6 +11,7 @@
 //! [`clock`] gives the CP56Time2a of this machine.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 #![cfg_attr(
     test,
     allow(

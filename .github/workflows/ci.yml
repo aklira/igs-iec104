@@ -38,6 +38,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      - name: Documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
       - name: Tests
         run: cargo test --workspace --all-features
 
@@ -46,3 +49,17 @@ jobs:
 
       - name: Deny
         run: cargo deny check
+
+  msrv:
+    name: minimum supported Rust version (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: rustup toolchain install 1.85 --profile minimal
+
+      # rust-toolchain.toml pins stable, so the toolchain is named on the command line.
+      - name: Tests
+        run: cargo +1.85 test --workspace --all-features
