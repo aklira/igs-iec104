@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "igs-iec104-codec-fuzz"
+version = "0.0.0"
+publish = false
+license = "Apache-2.0"
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# This crate is its own workspace: the standard gate of the root workspace does
+# not build it, and it needs a nightly toolchain to run.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.igs-iec104-codec]
+path = "../crates/igs-iec104-codec"
+
+[[bin]]
+name = "apdu_decoder"
+path = "fuzz_targets/apdu_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "asdu_decode"
+path = "fuzz_targets/asdu_decode.rs"
+test = false
+doc = false
+bench = false

@@ -19,6 +19,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | C4 ASDU bodies | Done, committed | log `docs/ai-log/C4.md`, decision D-010 in `PROVENANCE.md`, open questions Q-001 and Q-002 in `QUESTIONS.md` |
 | C5 APCI framing | Done, committed | log `docs/ai-log/C5.md`, decision D-011 in `PROVENANCE.md` |
 | C6 Property tests | Done, committed | log `docs/ai-log/C6.md`; `proptest` added as a dev-dependency (approved) |
+| C7 Fuzzing ⛔ | Partly done: harness committed, 10 min per target without crash; 24 h campaign pending (maintainer gate) | log `docs/ai-log/C7.md`; `libfuzzer-sys` and the `NCSA` licence approved |
 
 ## Decisions taken (beyond the plan)
 
@@ -35,6 +36,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | `sq_allowed` exposed as a bit mask, `object_size_bits` as `Option<u16>` | type ID 125 (Segment) has a null object size in the data: variable-length file transfer |
 | `llvm-tools-preview` added to `rust-toolchain.toml` | `cargo llvm-cov` needs it on the pinned toolchain |
 | `.gitignore` left untouched | an uncommitted edit there would start ignoring `IMPLEMENTATION.md` which is tracked; contradicts the plan; needs a maintainer call |
+| `NCSA` added to the licence allow list in `deny.toml` | `libfuzzer-sys` embeds compiler-rt, licensed NCSA. Only the fuzzing tool uses it; it is never shipped. Approved by the maintainer; see `docs/ai-log/C7.md` |
 
 ## Open questions for maintainers
 
@@ -59,7 +61,8 @@ decisions:
 - APCI and framing: the `apci` module (`Apdu`, `FrameDecoder`). The control
   bit positions come from the figure text in the raw pages of §5 (see C5), so a
   maintainer should check figures 6 to 8 against the PDF.
-- C7 (fuzzing) is a human gate and waits for a maintainer. The next task that
-  needs no gate is L1 (link parameters, depends on C5, which is done).
+- C7 (fuzzing): the harness is committed and passes its ten-minute check on both
+  targets. The 24-hour campaign is a maintainer gate (see `docs/ai-log/C7.md` for the
+  commands). The next task that needs no gate is L1 (link parameters, depends on C5).
 - The generated profile is ready. `object_size_bits(125) == None` is handled by
   the `FileSegment` value (length from LOS, see C4).
