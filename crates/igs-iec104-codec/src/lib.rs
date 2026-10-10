@@ -22,3 +22,6 @@ pub mod generated;
 
 /// Primitive formats: bit fields, integers, real numbers and time tags.
 pub mod formats;
+
+/// Information elements of the 104 profile, built on `formats`.
+pub mod elements;

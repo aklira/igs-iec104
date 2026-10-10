@@ -19,6 +19,9 @@ pub struct F16 {
 const F16_SCALE: f32 = 32768.0;
 
 impl F16 {
+    /// Octets on the wire.
+    pub const SIZE: usize = 2;
+
     /// Builds F16 from the raw 16-bit field value. Every `i16` is a valid
     /// F16 encoding (5-4 6.4.1).
     pub const fn from_raw(raw: i16) -> Self {
@@ -81,6 +84,9 @@ pub struct R32 {
 }
 
 impl R32 {
+    /// Octets on the wire.
+    pub const SIZE: usize = 4;
+
     /// Wraps the 32 IEEE 754 bit pattern.
     pub const fn from_bits(bits: u32) -> Self {
         Self { bits }

@@ -96,6 +96,25 @@ itself, to be confirmed by an observation test against other implementations.
 RES1 of CP24Time2a and CP56Time2a is GEN in 101 §7.2.6.18: 0 for a genuine time, 1 for a
 substituted time. The API names it `substituted`.
 
+### D-008 — All-zero range time in QueryLog (F_SC_NB_1)
+
+- **Decision**: the range times RangeStartTime and RangeStopTime are CP56Time2a, except that seven
+  octets set to zero mean "no bound on this side" (`RangeTime::Unbounded`). Such a value is never
+  read as a time, since a CP56Time2a with month 0 is invalid.
+- **Sources**: 104 §8.9, table of RangeStartTime and RangeStopTime: "0 (all zeros)" in the column
+  of the range bound, and the rows for an open start or an open end of range.
+- **Confidence**: high.
+- **Test**: `elements::tests::range_time_unbounded_and_bounded`.
+
+### D-009 — STATUS of file: range 0 to 32 in five bits
+
+- **Decision**: the STATUS field of SOF is accepted from 0 to 31. Five bits cannot carry the value 32
+  that the text lists, so the value is not representable and `Sof::new(32)` fails.
+- **Sources**: 101 §7.2.6.38: STATUS UI5[1..5] with range 0..32. The field width gives 0..31.
+- **Confidence**: medium (the range in the text does not match the field width; the field width
+  wins because it is what a receiver can see).
+- **Test**: `elements::tests::file_elements` (`Sof::new(32)` is rejected).
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

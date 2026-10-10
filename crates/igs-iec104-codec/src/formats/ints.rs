@@ -14,6 +14,9 @@ pub struct I16 {
 }
 
 impl I16 {
+    /// Octets on the wire.
+    pub const SIZE: usize = 2;
+
     /// Wraps a value; every `i16` is in range (5-4 5.2.1).
     pub const fn new(value: i16) -> Self {
         Self { value }

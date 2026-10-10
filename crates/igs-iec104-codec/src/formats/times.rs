@@ -66,6 +66,9 @@ pub struct Cp16Time2a {
 }
 
 impl Cp16Time2a {
+    /// Octets on the wire.
+    pub const SIZE: usize = CP16_OCTETS;
+
     /// Fails when `milliseconds` is above 59 999.
     pub const fn new(milliseconds: u16) -> Option<Self> {
         if milliseconds > MAX_MILLISECONDS {
@@ -105,6 +108,9 @@ pub struct Cp24Time2a {
 }
 
 impl Cp24Time2a {
+    /// Octets on the wire.
+    pub const SIZE: usize = CP24_OCTETS;
+
     /// Fails when `milliseconds` is above 59 999 or `minutes` above 59.
     pub const fn new(milliseconds: u16, minutes: u8) -> Option<Self> {
         if milliseconds > MAX_MILLISECONDS || minutes > MAX_MINUTES {
@@ -190,6 +196,9 @@ pub struct Cp56Time2a {
 }
 
 impl Cp56Time2a {
+    /// Octets on the wire.
+    pub const SIZE: usize = CP56_OCTETS;
+
     /// Fails when a field is outside its range: milliseconds 0..=59 999,
     /// minutes 0..=59, hours 0..=23, day of month 1..=31, day of week
     /// 0..=7, month 1..=12, year 0..=99.

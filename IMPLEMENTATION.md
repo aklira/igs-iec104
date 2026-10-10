@@ -380,7 +380,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | F4 Interop bench skeleton ⛔ | [x] |
 | F5 AI log and questions | [x] |
 | C1 Primitive formats | [x] |
-| C2 Information elements | [ ] |
+| C2 Information elements | [x] |
 | C3 ASDU header | [ ] |
 | C4 ASDU bodies | [ ] |
 | C5 APCI framing | [ ] |
