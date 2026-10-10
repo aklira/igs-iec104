@@ -581,20 +581,22 @@ async fn a_spontaneous_event_reaches_only_the_connections_whose_transfer_started
 }
 
 #[tokio::test]
-async fn every_started_connection_receives_the_spontaneous_events() {
+async fn a_second_started_connection_supersedes_the_first_and_takes_the_events() {
+    // Only one connection of a redundancy group carries data (§10.2): starting another one
+    // closes the first (§10.7).
     let (address, handle) = station().await;
     let mut first = started(address, STATION).await;
     let mut second = started(address, STATION).await;
+    next_until(
+        &mut first,
+        |event| matches!(event, Event::Disconnected(_)),
+        "the close of the first connection",
+    )
+    .await;
     let value = PointValue::Float(ShortFloat::from_f32(2.5), quality());
     handle
         .update(address_of(FLOAT), value, time())
         .expect("changed");
-    next_until(
-        &mut first,
-        answer(is_float, cause::SPONTANEOUS, false),
-        "the event on the first connection",
-    )
-    .await;
     next_until(
         &mut second,
         answer(is_float, cause::SPONTANEOUS, false),

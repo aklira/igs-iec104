@@ -3,38 +3,41 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The controlled station: a server that accepts connections from controlling stations and
-//! answers them (IEC 60870-5-104 §7.2 and §7.5 to §7.10, task S2).
+//! answers them (IEC 60870-5-104 §7.2 and §7.5 to §7.10, §10).
 //!
-//! [`Server::bind`] listens on the configured address. Each accepted connection runs one
-//! APCI session of the controlled role ([`crate::transport::run`]), and its ASDUs are answered by a
-//! [`Responder`]. The points of the station are published through a [`ServerHandle`]. An
-//! update that changes a point is queued in the [`ProcessImage`]; the dispatcher then sends
-//! it to every connection whose data transfer has started, as a spontaneous ASDU.
+//! [`Server::bind`] listens on the configured address. The connections of one server form
+//! a redundancy group (§10.2): they share one process image, and only one of them carries
+//! data at a time, the one that received the last STARTDT act. Each accepted connection runs
+//! one APCI session of the controlled role ([`crate::transport::run`]), and its ASDUs are
+//! answered by a [`Responder`].
 //!
-//! A connection that falls behind the spontaneous events is closed rather than given an
-//! incomplete stream: the controlling station recovers the state with an interrogation.
+//! The events of the image wait in its queue until the started connection takes them. When a
+//! connection is started, the others that are not stopped are closed (§10.7). The ASDUs of a
+//! closed connection that the peer did not acknowledge, and those it had not sent yet, are
+//! sent again on the connection that takes over, before the newer events (§10.5, §10.6). So
+//! an event raised while no connection is started, or while a switchover is in progress, is
+//! not lost, unless the queue of the image overflows.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use igs_iec104_codec::asdu::Asdu;
 use igs_iec104_codec::elements::Coi;
 use igs_iec104_codec::formats::Cp56Time2a;
 use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
 use igs_iec104_link::{ConfigError, LinkConfig, Parameters, Rejection, Role, TransferState};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, Notify};
-use tokio::task::JoinHandle;
+use tokio::net::TcpListener;
+use tokio::sync::{mpsc, Notify};
 use tokio::time;
 
 use crate::clock;
 use crate::process_image::{PointValue, ProcessError, ProcessImage, Update};
-use crate::transport::{run, Command, Delivery};
+use crate::transport::{run, Command, Delivery, Transport};
 
 pub mod respond;
 
@@ -66,8 +69,7 @@ pub struct ServerConfig {
     pub initialization_cause: u8,
     /// How long a selection waits for its execution.
     pub selection_timeout: Duration,
-    /// The number of spontaneous events the station queues, and of events a connection may
-    /// lag behind before it is closed.
+    /// The number of spontaneous events the station queues while no connection takes them.
     pub event_capacity: NonZeroUsize,
 }
 
@@ -115,16 +117,80 @@ impl fmt::Display for ServerError {
 
 impl std::error::Error for ServerError {}
 
-/// What the process image and the dispatcher share.
-struct Process {
-    image: Mutex<ProcessImage>,
-    queued: Notify,
-    events: broadcast::Sender<Asdu>,
+/// The redundancy group of the station: its connections, and the state they share.
+struct Group {
+    image: ProcessImage,
+    members: BTreeMap<u64, Member>,
+    /// The connection whose data transfer is started, if any.
+    started: Option<u64>,
+    /// ASDUs to send on the started connection before the events of the image: those of
+    /// the connections closed by a switchover that the peer did not acknowledge, and those
+    /// they had not sent (§10.5, §10.6).
+    carry: VecDeque<Asdu>,
+    next_id: u64,
 }
 
-fn lock(image: &Mutex<ProcessImage>) -> MutexGuard<'_, ProcessImage> {
-    // A panic in another task cannot leave the image half-changed: each change is one call.
-    image.lock().unwrap_or_else(PoisonError::into_inner)
+/// A connection of the group, as the group knows it.
+struct Member {
+    transfer: TransferState,
+    /// Tells the connection that another one started the data transfer (§10.7).
+    superseded: Arc<Notify>,
+}
+
+impl Group {
+    fn join(&mut self) -> (u64, Arc<Notify>) {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let superseded = Arc::new(Notify::new());
+        self.members.insert(
+            id,
+            Member {
+                transfer: TransferState::Stopped,
+                superseded: Arc::clone(&superseded),
+            },
+        );
+        (id, superseded)
+    }
+
+    /// Records the state of the data transfer of connection `id`. A connection that starts
+    /// supersedes every other connection that is not stopped (§10.7).
+    fn transfer(&mut self, id: u64, state: TransferState) {
+        if let Some(member) = self.members.get_mut(&id) {
+            member.transfer = state;
+        }
+        if state == TransferState::Started {
+            self.started = Some(id);
+            for (other, member) in &self.members {
+                if *other != id && member.transfer != TransferState::Stopped {
+                    member.superseded.notify_one();
+                }
+            }
+        } else if self.started == Some(id) {
+            self.started = None;
+        }
+    }
+
+    /// Removes connection `id`, and keeps the ASDUs it leaves unsent for the connection that
+    /// takes over.
+    fn leave(&mut self, id: u64, leftover: impl IntoIterator<Item = Asdu>) {
+        self.members.remove(&id);
+        if self.started == Some(id) {
+            self.started = None;
+        }
+        self.carry.extend(leftover);
+    }
+}
+
+/// What the connections of the station share.
+struct Process {
+    group: Mutex<Group>,
+    /// Signals the started connection that the image has new events.
+    queued: Notify,
+}
+
+fn lock(group: &Mutex<Group>) -> MutexGuard<'_, Group> {
+    // A panic in another task cannot leave the group half-changed: each change is one call.
+    group.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// What every connection of the station needs.
@@ -152,14 +218,18 @@ impl<H: Handler> Server<H> {
         let initialization = Coi::new(config.initialization_cause, false)
             .ok_or(ServerError::Initialization(config.initialization_cause))?;
         let image = ProcessImage::new(config.event_capacity).map_err(ServerError::Process)?;
-        let (events, _) = broadcast::channel(config.event_capacity.get());
         let listener = TcpListener::bind(config.bind)
             .await
             .map_err(ServerError::Io)?;
         let process = Arc::new(Process {
-            image: Mutex::new(image),
+            group: Mutex::new(Group {
+                image,
+                members: BTreeMap::new(),
+                started: None,
+                carry: VecDeque::new(),
+                next_id: 0,
+            }),
             queued: Notify::new(),
-            events,
         });
         Ok(Self {
             listener,
@@ -187,18 +257,9 @@ impl<H: Handler> Server<H> {
         }
     }
 
-    /// Accepts connections and dispatches the spontaneous events, until the future is
-    /// dropped. Each connection is served on its own task: connections already open
-    /// finish on their own when the future is dropped.
+    /// Accepts connections until the future is dropped. Connections already open finish on
+    /// their own when it is dropped.
     pub async fn run(self) {
-        let process = Arc::clone(&self.station.process);
-        tokio::select! {
-            () = dispatch(process) => {}
-            () = self.accept_connections() => {}
-        }
-    }
-
-    async fn accept_connections(&self) {
         loop {
             match self.listener.accept().await {
                 Ok((stream, _peer)) => {
@@ -225,7 +286,9 @@ impl ServerHandle {
         value: PointValue,
         stamped: bool,
     ) -> Result<(), ProcessError> {
-        lock(&self.process.image).add_point(self.common_address, address, value, stamped)
+        lock(&self.process.group)
+            .image
+            .add_point(self.common_address, address, value, stamped)
     }
 
     /// Puts a point in a group, 1 to 16, for the group interrogations.
@@ -234,17 +297,22 @@ impl ServerHandle {
         address: InformationObjectAddress,
         group: u8,
     ) -> Result<(), ProcessError> {
-        lock(&self.process.image).set_group(self.common_address, address, group)
+        lock(&self.process.group)
+            .image
+            .set_group(self.common_address, address, group)
     }
 
-    /// Sets the value of a point at `time`. A change is sent to the started connections.
+    /// Sets the value of a point at `time`. A change is sent by the started connection.
     pub fn update(
         &self,
         address: InformationObjectAddress,
         value: PointValue,
         time: Cp56Time2a,
     ) -> Result<Update, ProcessError> {
-        let result = lock(&self.process.image).update(self.common_address, address, value, time);
+        let result =
+            lock(&self.process.group)
+                .image
+                .update(self.common_address, address, value, time);
         if let Ok(Update::Queued) = result {
             self.process.queued.notify_one();
         }
@@ -253,72 +321,91 @@ impl ServerHandle {
 
     /// The current value of a point.
     pub fn value(&self, address: InformationObjectAddress) -> Option<PointValue> {
-        lock(&self.process.image).value(self.common_address, address)
+        lock(&self.process.group)
+            .image
+            .value(self.common_address, address)
     }
 }
 
-/// Moves the queued spontaneous events to the connections, in order.
-async fn dispatch(process: Arc<Process>) {
-    loop {
-        process.queued.notified().await;
-        let drained: Vec<Asdu> = {
-            let mut image = lock(&process.image);
-            std::iter::from_fn(|| image.pop_event()).collect()
-        };
-        for asdu in drained {
-            // The send fails only when no connection is subscribed: nothing to deliver.
-            let _ = process.events.send(asdu);
-        }
-    }
-}
-
-/// Serves one connection until its transport ends, or until it can no longer keep up.
-async fn serve<H: Handler>(stream: TcpStream, station: Arc<Station<H>>) {
-    let mut events = station.process.events.subscribe();
+/// Serves one connection until its transport ends, or until another connection supersedes it.
+async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Station<H>>) {
+    let (id, superseded) = lock(&station.process.group).join();
     let (commands_tx, commands_rx) = mpsc::channel::<Command>(CHANNEL);
     let (deliveries_tx, mut deliveries_rx) = mpsc::channel::<Delivery>(CHANNEL);
-    let transport: JoinHandle<_> =
-        tokio::spawn(run(stream, station.link, commands_rx, deliveries_tx));
+    let transport = tokio::spawn(run(stream, station.link, commands_rx, deliveries_tx));
     let mut connection = Connection {
-        station: &*station,
+        station: &station,
+        id,
         responder: Responder::new(station.common_address, station.selection_timeout),
         pending: VecDeque::new(),
+        returned: VecDeque::new(),
+        unacknowledged: Vec::new(),
         started: false,
         initialized: false,
     };
+    let mut commands = Some(commands_tx);
     loop {
         tokio::select! {
             delivery = deliveries_rx.recv() => match delivery {
                 Some(delivery) => {
+                    // A refusal is sent again on the retry timer, not at once: a window that
+                    // is still full would refuse it again, in a loop with no time passing.
+                    let refused = matches!(delivery, Delivery::Rejected(_));
                     if !connection.deliver(delivery) {
                         break;
+                    }
+                    if refused {
+                        continue;
                     }
                 }
                 None => break,
             },
-            event = events.recv() => match event {
-                Ok(asdu) => connection.spontaneous(asdu),
-                // Lagged: the connection missed events. Closed: the station is gone.
-                Err(_) => break,
-            },
-            () = time::sleep(RETRY), if !connection.pending.is_empty() => {}
+            () = station.process.queued.notified(), if connection.started => {}
+            () = superseded.notified() => {
+                // The session closes the connection as §10.7 describes, and hands back its
+                // unacknowledged ASDUs. A full command channel is not waited for: the close
+                // follows when the commands are dropped below.
+                if let Some(sender) = commands.as_ref() {
+                    let _ = sender.try_send(Command::Supersede);
+                }
+                break;
+            }
+            () = time::sleep(RETRY), if connection.started && connection.has_outgoing() => {}
         }
-        if !connection.flush(&commands_tx) {
+        connection.take_events();
+        let Some(sender) = commands.as_ref() else {
+            break;
+        };
+        if !connection.flush(sender) {
             break;
         }
     }
-    // Closing both channels ends the transport: its loop stops on either.
-    drop(deliveries_rx);
-    drop(commands_tx);
+    // Closing the commands ends the transport: it hands back its unacknowledged ASDUs, then
+    // stops. They are kept for the connection that takes over, with the unsent ASDUs.
+    drop(commands.take());
+    while let Some(delivery) = deliveries_rx.recv().await {
+        connection.deliver(delivery);
+    }
     let _ = transport.await;
+    let mut leftover = connection.unacknowledged;
+    leftover.extend(connection.returned);
+    leftover.extend(connection.pending);
+    lock(&station.process.group).leave(id, leftover);
+    // The connection that takes over may be waiting for the events of the leftover ASDUs.
+    station.process.queued.notify_one();
 }
 
 /// The state of one connection between the transport and the station.
 struct Connection<'a, H> {
     station: &'a Station<H>,
+    id: u64,
     responder: Responder,
-    /// ASDUs waiting for the window of k: the answers and the spontaneous events, in order.
+    /// ASDUs to send, in order: the answers, the events and the ASDUs of earlier connections.
     pending: VecDeque<Asdu>,
+    /// ASDUs the transport refused, in the order they were refused. They precede `pending`.
+    returned: VecDeque<Asdu>,
+    /// ASDUs sent on this connection and not acknowledged, handed back by the transport.
+    unacknowledged: Vec<Asdu>,
     started: bool,
     initialized: bool,
 }
@@ -332,12 +419,12 @@ impl<H: Handler> Connection<'_, H> {
                     // Without a time the station cannot answer a clock synchronization.
                     return false;
                 };
-                let image = lock(&self.station.process.image);
+                let image = lock(&self.station.process.group);
                 let replies = self.responder.respond(
                     &self.station.handler,
-                    &image,
+                    &image.image,
                     &asdu,
-                    Instant::now(),
+                    std::time::Instant::now(),
                     clock,
                 );
                 drop(image);
@@ -345,6 +432,7 @@ impl<H: Handler> Connection<'_, H> {
             }
             Delivery::Transfer(state) => {
                 self.started = state == TransferState::Started;
+                lock(&self.station.process.group).transfer(self.id, state);
                 if self.started && !self.initialized {
                     self.initialized = true;
                     let end = respond::end_of_initialization(
@@ -354,28 +442,52 @@ impl<H: Handler> Connection<'_, H> {
                     self.pending.extend(end);
                 }
             }
-            Delivery::Rejected(Rejection::WindowFull(asdu)) => {
-                // Sent again later, before the ASDUs that followed it.
-                self.pending.push_front(asdu);
+            Delivery::Unacknowledged(asdus) => self.unacknowledged.extend(asdus),
+            // The window is full, or the transfer stopped meanwhile: the ASDU is kept, and
+            // sent again in order before the pending ones.
+            Delivery::Rejected(Rejection::WindowFull(asdu) | Rejection::TransferStopped(asdu)) => {
+                self.returned.push_back(asdu);
             }
-            // The transfer stopped meanwhile, or the request does not apply to a controlled
-            // station: the ASDU is dropped.
+            // The request does not apply to a controlled station.
             Delivery::Rejected(_) => {}
         }
         true
     }
 
-    /// Queues a spontaneous event of this station, while its data transfer is started.
-    fn spontaneous(&mut self, asdu: Asdu) {
-        if self.started && asdu.common_address == self.station.common_address {
+    /// While this connection is started, takes the ASDUs kept for a switchover and the
+    /// events of the image into its pending queue, in that order.
+    fn take_events(&mut self) {
+        if !self.started {
+            return;
+        }
+        let mut group = lock(&self.station.process.group);
+        if group.started != Some(self.id) {
+            return;
+        }
+        while let Some(asdu) = group.carry.pop_front() {
             self.pending.push_back(asdu);
         }
+        while let Some(asdu) = group.image.pop_event() {
+            self.pending.push_back(asdu);
+        }
+    }
+
+    /// True while an ASDU waits to be sent: a pending one, or one the transport refused.
+    fn has_outgoing(&self) -> bool {
+        !self.pending.is_empty() || !self.returned.is_empty()
     }
 
     /// Sends the pending ASDUs while the transport accepts them. Returns false when the
     /// transport has gone.
     fn flush(&mut self, commands: &mpsc::Sender<Command>) -> bool {
         use mpsc::error::TrySendError;
+        if !self.started {
+            return true;
+        }
+        // The refused ASDUs were sent before the pending ones: they go first, in their order.
+        while let Some(asdu) = self.returned.pop_back() {
+            self.pending.push_front(asdu);
+        }
         while let Some(asdu) = self.pending.pop_front() {
             match commands.try_send(Command::SendAsdu(asdu)) {
                 Ok(()) => {}
@@ -390,3 +502,6 @@ impl<H: Handler> Connection<'_, H> {
         true
     }
 }
+
+#[cfg(test)]
+mod tests;

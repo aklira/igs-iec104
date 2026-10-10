@@ -26,6 +26,7 @@ pub mod clock;
 pub mod error;
 pub mod procedures;
 pub mod process_image;
+pub mod redundancy;
 pub mod server;
 pub mod transport;
 
