@@ -1,0 +1,64 @@
+# The points of igs104-server, as a TOML file (see docs/igs104-server.md). This file holds the
+# built-in demo points. Each [[point]] is one information object; each address is 1 to 16777215
+# and is used once.
+
+[[point]]
+address = 1
+kind = "single"          # single, double, normalized, scaled, float or counter
+group = 1                # 1 to 16, for the group interrogations
+command = true           # the station accepts commands to this point
+simulation = "toggle"    # constant (the default), toggle, ramp or count
+period_ms = 5000         # the time between two changes; every motion but constant needs it
+
+[[point]]
+address = 2
+kind = "single"
+stamped = true           # time-tagged: the changes carry the time of the change
+simulation = "toggle"
+period_ms = 2000
+
+[[point]]
+address = 3
+kind = "double"
+group = 1
+command = true
+simulation = "toggle"
+period_ms = 3000
+
+[[point]]
+address = 4
+kind = "normalized"
+group = 1
+simulation = "ramp"
+period_ms = 1000
+increment = 1000         # the change of the raw value at each step
+
+[[point]]
+address = 5
+kind = "scaled"
+group = 1
+simulation = "ramp"
+period_ms = 1000
+increment = -700
+
+[[point]]
+address = 6
+kind = "float"
+stamped = true
+group = 1
+simulation = "ramp"
+period_ms = 2000
+increment = 3
+
+[[point]]
+address = 7
+kind = "counter"
+group = 2
+simulation = "count"     # a counter counts its increment at each step; it takes no command
+period_ms = 10000
+increment = 1
+
+[[point]]
+address = 8
+kind = "single"
+group = 2                # no simulation: the point keeps its zero value

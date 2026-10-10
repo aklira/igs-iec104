@@ -48,6 +48,26 @@ impl Drop for Station {
     }
 }
 
+/// Starts the station with `extra` options, after its address, its common address and its duration.
+fn start_station_with(seconds: u64, extra: &[&str]) -> Station {
+    let address = free_port();
+    let child = Process::new(env!("CARGO_BIN_EXE_igs104-server"))
+        .args([
+            "--bind",
+            &address.to_string(),
+            "-c",
+            &STATION.to_string(),
+            "--for",
+            &seconds.to_string(),
+        ])
+        .args(extra)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("the server starts");
+    Station { child, address }
+}
+
 fn start_station(seconds: u64) -> Station {
     let address = free_port();
     let child = Process::new(env!("CARGO_BIN_EXE_igs104-server"))
@@ -239,4 +259,42 @@ async fn a_station_that_runs_for_its_duration_stops() {
         sleep(Duration::from_millis(50)).await;
     };
     assert!(status.success(), "the station ends cleanly: {status}");
+}
+
+#[tokio::test]
+async fn the_station_serves_only_the_points_of_its_toml_file() {
+    // The file holds one single-point, so the interrogation answers with that point alone.
+    let path = format!("{}/server-points.toml", env!("CARGO_TARGET_TMPDIR"));
+    std::fs::write(
+        &path,
+        "[[point]]\naddress = 9\nkind = \"single\"\ngroup = 1\n",
+    )
+    .expect("the file is written");
+    let station = start_station_with(20, &["--points", &path]);
+    let mut client = connect(station.address).await;
+    client
+        .interrogate(Qoi::STATION)
+        .await
+        .expect("the client runs");
+
+    let mut types = Vec::new();
+    loop {
+        let event = next_until(
+            &mut client,
+            |e| matches!(e, Event::Delivery(Delivery::Asdu(_))),
+            "an answer",
+        )
+        .await;
+        let Event::Delivery(Delivery::Asdu(asdu)) = event else {
+            continue;
+        };
+        if asdu.cot.cause() == cause::ACTIVATION_TERMINATION {
+            break;
+        }
+        if asdu.cot.cause() == cause::INTERROGATED_STATION {
+            let name = format!("{:?}", asdu.body);
+            types.push(name.split('(').next().unwrap_or_default().to_string());
+        }
+    }
+    assert_eq!(types, ["M_SP_NA_1"]);
 }

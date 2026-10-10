@@ -407,7 +407,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | S1 Process image | [x] |
 | S2 Server | [x] |
 | S3 Redundancy groups | [x] |
-| S4 `igs104-server` binary | [ ] |
+| S4 `igs104-server` binary | [x] |
 | S5 Server interop, load and switchover ⛔ | [ ] |
 | X1 TLS | [ ] |
 | X2 Documentation and examples | [x] |
