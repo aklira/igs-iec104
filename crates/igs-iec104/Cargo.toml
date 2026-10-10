@@ -26,6 +26,8 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "
 [dev-dependencies]
 # test-util gives tokio::time::pause (approved for T1, see docs/ai-log/T1.md).
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "test-util", "time"] }
+# proptest is the dev dependency approved for C6 (docs/ai-log/C6.md).
+proptest = "1.11.0"
 
 [[bin]]
 name = "igs104-client"
