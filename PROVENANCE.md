@@ -115,6 +115,16 @@ substituted time. The API names it `substituted`.
   wins because it is what a receiver can see).
 - **Test**: `elements::tests::file_elements` (`Sof::new(32)` is rejected).
 
+### D-010 — Largest ASDU: 249 octets
+
+- **Decision**: an ASDU is at most 249 octets. Longer ASDUs are rejected on decoding
+  (`DecodeError::TooLong`) and on encoding (`EncodeError::TooLong`).
+- **Sources**: 104 §5, APCI: the APDU length field counts the four control octets plus the ASDU,
+  and its maximum is 253, so the ASDU is at most 249. 104 §9.5 states the 253 maximum for the APDU
+  length field, which matches. The generated `MAX_APDU_LENGTH` is 253 (field value).
+- **Confidence**: high.
+- **Test**: `asdu::tests::decoding_rejects_an_asdu_over_249_octets`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

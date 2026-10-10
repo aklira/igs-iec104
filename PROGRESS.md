@@ -16,6 +16,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | C1 Primitive formats | Done, committed | log `docs/ai-log/C1.md`, decisions D-006 and D-007 in `PROVENANCE.md` |
 | C2 Information elements | Done, committed | log `docs/ai-log/C2.md`, decisions D-008 and D-009 in `PROVENANCE.md` |
 | C3 ASDU header | Done, committed | log `docs/ai-log/C3.md`, typed errors in `error.rs` |
+| C4 ASDU bodies | Done, committed | log `docs/ai-log/C4.md`, decision D-010 in `PROVENANCE.md`, open questions Q-001 and Q-002 in `QUESTIONS.md` |
 
 ## Decisions taken (beyond the plan)
 
@@ -53,10 +54,8 @@ decisions:
   Podman). It pins FledgePower v1.2.4 by digest and starts each peer with
   `bench/peer/bootstrap.sh` (one service per container).
 
-- Open point for C4: the header returns `DecodeError` (typed), while the C1 and C2
-  element types return `Option`. Pick one error path for the ASDU body, either
-  by mapping the element results or by moving the elements to `Result`.
-- The generated profile is ready for C4. `object_size_bits(125) == None` must
-  be handled when C4 decodes. C4 (ASDU bodies) is the next codec task: C2 and
-  C3 are done. It reads the element types in `elements`; the all-zero range
-  time of F_SC_NB_1 is `RangeTime::Unbounded`.
+- The ASDU body is the `asdu` module: `Asdu::decode` and `validate_profile`. The
+  element errors are typed (`DecodeError::InvalidElement`, `Truncated`). C5 (APCI
+  framing) is the next codec task: it depends on C4, which is done.
+- The generated profile is ready. `object_size_bits(125) == None` is handled by
+  the `FileSegment` value (length from LOS, see C4).

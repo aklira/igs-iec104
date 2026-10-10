@@ -12,4 +12,5 @@ files disagree.
 
 | ID | Task | Question | Clauses read | Status |
 | --- | --- | --- | --- | --- |
-| _none yet_ | | | | |
+| Q-001 | C4 | Are the file transfer types (F_FR_NA_1 to F_DR_TA_1) sent in both directions? 104 §9.5 marks them "station-specific" and does not say. The codec accepts both directions; the profile check does not restrict them. | 104 §9.5 (file transfer table) | open: both directions accepted |
+| Q-002 | C4 | Should a received F_SC_NB_1 with cause 5 (request) be tolerated? D-005 leaves this open. The codec rejects it with `CauseNotAllowed`. | PROVENANCE.md D-005; 104 §8.9 | open: rejected |
