@@ -31,3 +31,6 @@ pub mod header;
 
 /// Typed errors of the codec.
 pub mod error;
+
+/// ASDU body: information objects by type identification, and the profile rules.
+pub mod asdu;

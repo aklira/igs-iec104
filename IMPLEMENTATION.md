@@ -382,7 +382,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | C1 Primitive formats | [x] |
 | C2 Information elements | [x] |
 | C3 ASDU header | [x] |
-| C4 ASDU bodies | [ ] |
+| C4 ASDU bodies | [x] |
 | C5 APCI framing | [ ] |
 | C6 Property tests | [ ] |
 | C7 Fuzzing ⛔ | [ ] |
