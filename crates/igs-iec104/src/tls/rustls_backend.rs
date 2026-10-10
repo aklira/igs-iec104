@@ -6,10 +6,14 @@
 //! suites and groups of the profile that rustls implements, and it requires a certificate from
 //! both peers (clause 6.4.3).
 //!
-//! rustls has no TLS 1.0 or 1.1, no renegotiation, no static RSA key exchange, no finite-field
-//! DHE, no CCM and no NULL encryption. The conformance gaps that follow are recorded in
-//! `docs/ai-log/X1.md`. The sans-I/O connections are the base of the tokio stream. The renegotiation interval of
-//! the settings is not applied by this backend: its sessions are not renegotiated.
+//! This backend is the feature `rustls`, not the default. rustls has no TLS 1.0 or 1.1, no
+//! renegotiation, no static RSA key exchange, no finite-field DHE, no CCM and no NULL encryption,
+//! and it has no RSA-PSS key type for rsa_pss_pss_sha256. The mandatory items it lacks are listed
+//! in `docs/ai-log/X1.md`, so a station with this backend does not conform to the profile
+//! (decision Q-025).
+//!
+//! The sans-I/O connections are the base of the tokio stream. The renegotiation interval of the
+//! settings is not applied by this backend: its sessions are not renegotiated.
 
 use std::fmt;
 use std::io;

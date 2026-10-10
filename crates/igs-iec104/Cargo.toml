@@ -18,12 +18,15 @@ indexing_slicing = "deny"
 arithmetic_side_effects = "deny"
 
 [features]
-# The rustls backend (task X1): TLS 1.2 and 1.3 with the cipher suites of the TLS profile that
-# rustls implements. Enabled by default.
-default = ["rustls"]
-rustls = ["dep:rustls", "dep:tokio-rustls"]
-# The OpenSSL backend (task X1, renegotiation). It needs the OpenSSL development files (libssl-dev).
+# The OpenSSL backend (task X1): the default. It offers every mandatory item of the TLS profile
+# and renegotiates TLS 1.2 sessions (decision Q-025, docs/ai-log/X1.md). It needs the OpenSSL
+# development files (libssl-dev).
+default = ["openssl"]
 openssl = ["dep:openssl", "dep:tokio-openssl"]
+# The rustls backend (task X1): TLS 1.2 and 1.3 with the cipher suites of the TLS profile that
+# rustls implements. It does not offer the mandatory CBC, DHE, CCM and RSA-PSS items, nor the
+# renegotiation of TLS 1.2 (docs/ai-log/X1.md). Build it with --no-default-features --features rustls.
+rustls = ["dep:rustls", "dep:tokio-rustls"]
 
 [dependencies]
 igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
@@ -51,9 +54,9 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "
 proptest = "1.11.0"
 
 [[example]]
-# The TLS example uses the rustls backend, so it is built only with that feature.
+# The TLS example uses the OpenSSL backend, so it is built only with that feature.
 name = "tls"
-required-features = ["rustls"]
+required-features = ["openssl"]
 
 [[bin]]
 name = "igs104-client"

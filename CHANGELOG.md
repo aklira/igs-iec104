@@ -15,8 +15,9 @@ All notable changes to this project are recorded in this file. The format follow
 - `igs-iec104`: the async client `Client`, with reconnection and the procedures of clause 7; the
   async controlled station `Server`, with its process image and its answers to the procedures; the
   redundancy groups on both sides (`RedundantClient` and the redundant controlled station).
-- TLS (IEC 62351-3) over rustls, as the default feature: the client and server options, the
-  security events of Annex A, and the profile of the conformance tables.
+- TLS (IEC 62351-3) over OpenSSL, the default feature `openssl`: the client and server options, the
+  security events of Annex A, and the profile of the conformance tables, with every mandatory item
+  negotiated by a test. The feature `rustls` is the alternative backend.
 - Binaries `igs104-client`, a command-line controlling station, and `igs104-server`, a demo
   controlled station with simulated points.
 - Examples `client`, `server`, `redundancy` and `tls`.
@@ -24,9 +25,13 @@ All notable changes to this project are recorded in this file. The format follow
 
 ### Known gaps
 
-- TLS has two backends: rustls (default) and OpenSSL (feature `openssl`). The OpenSSL backend renegotiates
-  a TLS 1.2 session at the configured interval (default 12 hours); rustls does not (see
-  `docs/ai-log/X1.md`).
+- TLS has two backends: OpenSSL (default, feature `openssl`) and rustls (feature `rustls`). The OpenSSL
+  backend renegotiates a TLS 1.2 session at the configured interval (default 12 hours). The rustls
+  backend does not renegotiate, and it lacks the mandatory CBC and DHE suites of TLS 1.2, CCM, ffdhe2048,
+  rsa_pss_pss_sha256 and the renegotiation (decision Q-025, `docs/ai-log/X1.md`).
+- Neither backend yet applies the key update interval of clause 8.4, and the server does not yet check
+  that the peer renegotiates in time (clause 7.4.5). The default build needs the OpenSSL development
+  files (`libssl-dev`).
 - The demo station `igs104-server` serves a built-in set of points, or the points of a TOML file given
   with `--points`.
 - The interop, load and switchover tests under load are not done.

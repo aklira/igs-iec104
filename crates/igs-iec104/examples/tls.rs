@@ -26,13 +26,15 @@ use igs_iec104::client::{Client, ClientConfig, Event};
 use igs_iec104::process_image::PointValue;
 use igs_iec104::server::{Handler, Operation, Refusal, Server, ServerConfig};
 use igs_iec104::tls::events::{SecurityEvent, SecurityEvents};
-use igs_iec104::tls::rustls_backend::{identity_from_pem, trust_anchors_from_pem, RustlsBackend};
-use igs_iec104::tls::settings::TlsSettings;
+use igs_iec104::tls::openssl_backend::OpensslBackend;
+use igs_iec104::tls::settings::{Identity, TlsSettings, TrustAnchors};
 use igs_iec104::tls::Secure;
 use igs_iec104::Delivery;
 use igs_iec104_codec::elements::{Qoi, QualityFlags, Siq};
 use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
 use igs_iec104_link::TransferState;
+use openssl::pkey::PKey;
+use openssl::x509::X509;
 
 /// The common address of the station.
 const STATION: u16 = 1;
@@ -63,13 +65,32 @@ impl Handler for Refuse {
     }
 }
 
+/// The DER of every certificate in a PEM file.
+fn certificates_der(pem: &[u8]) -> Result<Vec<Vec<u8>>, Box<dyn Error>> {
+    let mut der = Vec::new();
+    for certificate in X509::stack_from_pem(pem)?.iter() {
+        der.push(certificate.to_der()?);
+    }
+    Ok(der)
+}
+
+/// The identity of a station from its PEM files: the certificate chain and the key, in DER.
+fn station_identity(
+    events: &dyn SecurityEvents,
+    certificate: &[u8],
+    key: &[u8],
+) -> Result<Identity, Box<dyn Error>> {
+    let key = PKey::private_key_from_pem(key)?.private_key_to_der()?;
+    Ok(Identity::new(certificates_der(certificate)?, key, events)?)
+}
+
 /// The TLS backend of one station, from its PEM files.
 fn backend(roots: &[u8], certificate: &[u8], key: &[u8]) -> Result<Secure, Box<dyn Error>> {
     let shared: Arc<dyn SecurityEvents> = Arc::new(Print);
-    let identity = identity_from_pem(shared.as_ref(), certificate, key)?;
-    let trust = trust_anchors_from_pem(roots)?;
+    let identity = station_identity(shared.as_ref(), certificate, key)?;
+    let trust = TrustAnchors::new(certificates_der(roots)?)?;
     let settings = TlsSettings::new(identity, trust, shared);
-    Ok(Secure::new(RustlsBackend::new(&settings)?))
+    Ok(Secure::new(OpensslBackend::new(&settings)?))
 }
 
 #[tokio::main(flavor = "current_thread")]

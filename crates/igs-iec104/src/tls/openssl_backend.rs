@@ -14,6 +14,10 @@
 //! TLS 1.2 sessions are renegotiated once the interval of the settings has passed (clause 7.4.5). The
 //! `openssl` crate has no wrapper for renegotiation: the call goes through `openssl_renegotiation`, the
 //! only module of igs-iec104 that contains unsafe code (Q-028, approved).
+//!
+//! This is the default backend. Each mandatory item of the profile has a test that negotiates it
+//! (`every_mandatory_item_of_the_profile_is_negotiated`). Not done yet: the key update interval of
+//! clause 8.4, and the check of clause 7.4.5 that the peer renegotiates in time (docs/ai-log/X1.md).
 
 use std::io;
 use std::pin::Pin;
