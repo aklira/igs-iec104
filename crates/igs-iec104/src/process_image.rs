@@ -84,7 +84,11 @@ impl PointValue {
     }
 
     /// The ASDU of one object at `address`, time-tagged with `time` when it is `Some`.
-    fn body(self, address: InformationObjectAddress, time: Option<Cp56Time2a>) -> Option<Body> {
+    pub(crate) fn body(
+        self,
+        address: InformationObjectAddress,
+        time: Option<Cp56Time2a>,
+    ) -> Option<Body> {
         Some(match (self, time) {
             (Self::Single(v), None) => Body::M_SP_NA_1(one(address, v)),
             (Self::Single(v), Some(time)) => {
@@ -168,6 +172,8 @@ pub enum ProcessError {
     Profile(ProfileError),
     /// The spontaneous cause of transmission is out of range.
     Cause,
+    /// A group is 1 to 16.
+    InvalidGroup,
 }
 
 impl fmt::Display for ProcessError {
@@ -180,6 +186,7 @@ impl fmt::Display for ProcessError {
             Self::NoTimeTag => write!(f, "this value has no time-tagged form"),
             Self::Profile(error) => write!(f, "{error}"),
             Self::Cause => write!(f, "the spontaneous cause of transmission is out of range"),
+            Self::InvalidGroup => write!(f, "a group is 1 to 16"),
         }
     }
 }
@@ -200,6 +207,13 @@ struct Point {
     address: InformationObjectAddress,
     stamped: bool,
     value: PointValue,
+    /// The groups of the point: bit `n - 1` is set for group `n` (1 to 16).
+    groups: u16,
+}
+
+/// The bit of group `group` in [`Point::groups`]; `None` outside 1 to 16.
+fn group_mask(group: u8) -> Option<u16> {
+    1u16.checked_shl(u32::from(group.checked_sub(1)?))
 }
 
 /// The points of a controlled station and the queue of their spontaneous ASDUs.
@@ -251,10 +265,28 @@ impl ProcessImage {
                     address,
                     stamped,
                     value,
+                    groups: 0,
                 });
                 Ok(())
             }
         }
+    }
+
+    /// Adds a point to group `group` (1 to 16) for the interrogations of groups. A point
+    /// may belong to several groups.
+    pub fn set_group(
+        &mut self,
+        common: CommonAddress,
+        address: InformationObjectAddress,
+        group: u8,
+    ) -> Result<(), ProcessError> {
+        let mask = group_mask(group).ok_or(ProcessError::InvalidGroup)?;
+        let point = self
+            .points
+            .get_mut(&key(common, address))
+            .ok_or(ProcessError::UnknownPoint)?;
+        point.groups |= mask;
+        Ok(())
     }
 
     /// Sets the value of a point at `time`. A change queues one spontaneous ASDU; the
@@ -305,10 +337,28 @@ impl ProcessImage {
         &self,
         common: CommonAddress,
     ) -> impl Iterator<Item = (InformationObjectAddress, PointValue)> + '_ {
+        self.station(common)
+            .map(|point| (point.address, point.value))
+    }
+
+    /// The points of one common address that belong to `group`, in address order. A group
+    /// outside 1 to 16 has no point.
+    pub fn points_in_group(
+        &self,
+        common: CommonAddress,
+        group: u8,
+    ) -> impl Iterator<Item = (InformationObjectAddress, PointValue)> + '_ {
+        let mask = group_mask(group).unwrap_or(0);
+        self.station(common)
+            .filter(move |point| point.groups & mask != 0)
+            .map(|point| (point.address, point.value))
+    }
+
+    fn station(&self, common: CommonAddress) -> impl Iterator<Item = &Point> + '_ {
         let common = common.value();
         self.points
             .range((common, u32::MIN)..=(common, u32::MAX))
-            .map(|(_, point)| (point.address, point.value))
+            .map(|(_, point)| point)
     }
 
     /// The oldest queued spontaneous ASDU, which is removed from the queue.

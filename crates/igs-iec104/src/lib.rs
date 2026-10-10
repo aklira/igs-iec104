@@ -6,7 +6,9 @@
 //!
 //! The [`transport`] module runs one APCI session of `igs-iec104-link` over a byte
 //! stream (task T1). The [`client`] keeps a connection up and offers the procedures
-//! of §7 (task T2); the [`procedures`] build their ASDUs.
+//! of §7 (task T2); the [`procedures`] build their ASDUs. The [`server`] is the controlled
+//! station (task S2), which answers them from its [`process_image`] (task S1); the
+//! [`clock`] gives the CP56Time2a of this machine.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(
@@ -20,9 +22,11 @@
 )]
 
 pub mod client;
+pub mod clock;
 pub mod error;
 pub mod procedures;
 pub mod process_image;
+pub mod server;
 pub mod transport;
 
 pub use client::{Client, ClientConfig, ClientError, Event, ReconnectPolicy};

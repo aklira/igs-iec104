@@ -369,3 +369,53 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_point_belongs_to_the_groups_it_is_set_to() {
+    let mut image = image(4);
+    image
+        .add_point(ca(1), ioa(30), float(0.0), false)
+        .expect("registered");
+    image
+        .add_point(ca(1), ioa(10), float(0.0), false)
+        .expect("registered");
+    image
+        .add_point(ca(2), ioa(20), float(0.0), false)
+        .expect("registered");
+    image.set_group(ca(1), ioa(30), 16).expect("group 16");
+    image.set_group(ca(1), ioa(30), 1).expect("group 1");
+    image.set_group(ca(1), ioa(10), 1).expect("group 1");
+    let group_one: Vec<u32> = image
+        .points_in_group(ca(1), 1)
+        .map(|(address, _)| address.value())
+        .collect();
+    assert_eq!(group_one, vec![10, 30]);
+    let group_sixteen: Vec<u32> = image
+        .points_in_group(ca(1), 16)
+        .map(|(address, _)| address.value())
+        .collect();
+    assert_eq!(group_sixteen, vec![30]);
+    assert_eq!(image.points_in_group(ca(1), 2).count(), 0);
+    assert_eq!(image.points_in_group(ca(1), 0).count(), 0);
+    assert_eq!(image.points_in_group(ca(1), 17).count(), 0);
+}
+
+#[test]
+fn a_group_is_one_to_sixteen_and_the_point_must_exist() {
+    let mut image = image(4);
+    image
+        .add_point(ca(1), ioa(1), float(0.0), false)
+        .expect("registered");
+    assert_eq!(
+        image.set_group(ca(1), ioa(1), 0),
+        Err(ProcessError::InvalidGroup)
+    );
+    assert_eq!(
+        image.set_group(ca(1), ioa(1), 17),
+        Err(ProcessError::InvalidGroup)
+    );
+    assert_eq!(
+        image.set_group(ca(1), ioa(2), 1),
+        Err(ProcessError::UnknownPoint)
+    );
+}
