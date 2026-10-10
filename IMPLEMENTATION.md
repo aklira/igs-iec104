@@ -256,10 +256,19 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 
 **L4 — Interop APCI** ⛔
 - Depends: L3, F4, T1.
-- Produce: bench scenarios: STARTDT, TESTFR, t1/t2/t3 behaviour, wrap-around, k/w limits, with
-  fault injection (delayed acks, dropped frames).
+- Produce: bench scenarios: STARTDT, TESTFR, t2 and w, the window of k, and the wrap-around.
+  Fault injection moved to L5 by the maintainer.
 - Gate: maintainer reviews the scenario list against the phase 2 exit criterion.
-- Done when: all scenarios pass in both directions.
+- Done when: the accepted scenarios pass in both directions. The wrap of N(S) in the
+  controlled direction (the reference client closes after about 60 s) is an accepted known
+  gap, recorded as an expected failure in the bench.
+
+**L5 — Fault injection interop**
+- Depends: L4.
+- Produce: an APCI-aware relay in the probe, which drops, delays or duplicates frames on
+  request; scenarios for the expiry of t1 with a silent peer (both directions), a dropped frame
+  (disturbed sequence, figure 11, Q-005), a delayed acknowledgement and a duplicated frame.
+- Done when: the scenarios pass in both directions, with the results in `docs/ai-log/L5.md`.
 
 ### Phase 3 — Client (`igs-iec104`)
 
@@ -389,7 +398,8 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | L1 Parameters | [x] |
 | L2 State machine core | [x] |
 | L3 Timers and tests | [x] |
-| L4 Interop APCI ⛔ | [ ] |
+| L4 Interop APCI ⛔ | [x] |
+| L5 Fault injection interop | [ ] |
 | T1 Transport | [x] |
 | T2 Client API | [ ] |
 | T3 `igs104-client` binary | [ ] |
@@ -403,4 +413,4 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | X2 Documentation and examples | [ ] |
 | X3 Release readiness ⛔ | [ ] |
 
-Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, T2, T3, T4, S1–S4, S5, X1, X2, C7, X3.
+Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, L5, T2, T3, T4, S1–S4, S5, X1, X2, C7, X3.
