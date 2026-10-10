@@ -75,6 +75,8 @@ The first run pulls the images (about 600 MB).
 | `tests/test_f4_reference_gi.py` | F4 | the reference client starts data transfer on the reference server and runs a general interrogation (activation, confirmation, termination); the capture has no malformed frame and no error-level expert info |
 | `tests/test_l4_interop.py` | L4 | igs-iec104 against both reference peers: STARTDT, interrogation and STOPDT; TESTFR in both directions; the window of k; the acknowledgement after w and within t2. The probe's capture is checked frame by frame |
 
+| `tests/test_l5_faults.py` | L5 | fault injection between igs-iec104 and both reference peers: t1 expiry with a silent peer, late acknowledgements within and beyond t1, dropped and duplicated frames (disturbed sequence). The relay in the probe applies the faults |
+
 L4 scenarios need the static probe: `probe.build()` runs
 `cargo build --release --target x86_64-unknown-linux-musl` (add the target with
 `rustup target add x86_64-unknown-linux-musl` first). The wrap of N(S) at 32768 is

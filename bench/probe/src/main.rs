@@ -10,6 +10,7 @@
 //! `PASS <scenario>` (exit 0) or `FAIL <scenario>: <reason>` (exit 1).
 
 mod link;
+mod relay;
 mod scenarios;
 
 use std::net::SocketAddr;

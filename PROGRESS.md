@@ -25,7 +25,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | L3 Timers and tests | Done, not committed: t1, t2 and t3 with fake-clock tests; `Session::new` takes the establishment instant and `next_deadline()` replaces a wake-up action | log `docs/ai-log/L3.md`; open questions Q-009 to Q-013 in `QUESTIONS.md` (figures 12 to 14 missing from the prepared text) |
 | T1 Transport | Done, not committed: async driver over `tokio::net::TcpStream` with t0 connect timeout, clean shutdown and typed errors; generic `Transport` bound for TLS; `Delivery::Transfer` reports the state of the data transfer | log `docs/ai-log/T1.md`; tests: 12 in `igs-iec104` (in memory on a paused clock, and TCP loopback) |
 | L4 Interop APCI ⛔ | Done for the accepted scope, committed `40b95a9`: probe (`bench/probe`) and 8 scenarios pass in both directions; the wrap of N(S) is an accepted known gap (expected failure). Fault injection moved to L5 | log `docs/ai-log/L4.md`; bench tests `tests/test_l4_interop.py` |
-| L5 Fault injection interop | Not started: relay in the probe, t1 expiry, dropped and delayed frames | — |
+| L5 Fault injection interop | Done: APCI relay in the probe; nine scenarios pass in both directions (t1 expiry, late and dropped and duplicated frames) | log `docs/ai-log/L5.md`; bench tests `tests/test_l5_faults.py` |
 
 ## Decisions taken (beyond the plan)
 

@@ -8,11 +8,12 @@
 //! wire checks are made from the capture, in the bench tests.
 
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use igs_iec104::{connect, Command, Delivery};
+use igs_iec104::{connect, Command, Delivery, TransportError};
+use igs_iec104_codec::apci::SequenceNumber;
 use igs_iec104_codec::header::cause;
-use igs_iec104_link::{LinkConfig, Parameters, Rejection, Role, TransferState};
+use igs_iec104_link::{CloseReason, LinkConfig, Parameters, Rejection, Role, TransferState};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
@@ -21,6 +22,7 @@ use crate::link::{
     interrogation, interrogation_cause, interrogation_with_cause, reply_to, single_point,
     transfer_is, Failure, Link,
 };
+use crate::relay::{bridge, Fault, Kind, Rule, Toward};
 
 /// How long a reply may take.
 const REPLY: Duration = Duration::from_secs(30);
@@ -54,6 +56,15 @@ pub async fn run(name: &str, address: SocketAddr) -> Result<(), Failure> {
         "d1-testfr-from-peer" => controlling_peer_test(address).await,
         "d2-testfr-from-peer" => controlled_peer_test(address).await,
         "d2-wrap" => controlled_wrap(address).await,
+        "d1-fault-t1-silent" => controlling_t1_silent(address).await,
+        "d1-fault-ack-within-t1" => controlling_ack_within_t1(address).await,
+        "d1-fault-ack-beyond-t1" => controlling_ack_beyond_t1(address).await,
+        "d1-fault-dropped" => controlling_dropped(address).await,
+        "d1-fault-duplicated" => controlling_duplicated(address).await,
+        "d2-fault-t1-silent" => controlled_t1_silent(address).await,
+        "d2-fault-ack-late" => controlled_ack_late(address).await,
+        "d2-fault-dropped" => controlled_dropped(address).await,
+        "d2-fault-duplicated" => controlled_duplicated(address).await,
         other => Err(format!("unknown scenario {other}").into()),
     }
 }
@@ -344,4 +355,288 @@ async fn controlled_wrap(address: SocketAddr) -> Result<(), Failure> {
         return Err("the connection closed after the frames".into());
     }
     link.finish().await
+}
+
+/// A rule over the frames of `kind` going `toward`, from index `first`, `count` of them.
+fn rule(toward: Toward, kind: Kind, first: usize, count: Option<usize>, fault: Fault) -> Rule {
+    Rule {
+        toward,
+        kind,
+        first,
+        count,
+        fault,
+    }
+}
+
+/// The driver connects to the peer through a relay that applies `rules`.
+async fn controlling_through_relay(peer: SocketAddr, rules: Vec<Rule>) -> Result<Link, Failure> {
+    let relay = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| format!("cannot listen for the relay: {error}"))?;
+    let relay_address = relay.local_addr()?;
+    tokio::spawn(async move {
+        let (driver, _) = relay.accept().await?;
+        let upstream = TcpStream::connect(peer).await?;
+        bridge(driver, upstream, &rules).await
+    });
+    let config = LinkConfig::with_defaults(Role::Controlling);
+    let stream = connect(relay_address, config.parameters().t0).await?;
+    Ok(Link::spawn(stream, config))
+}
+
+/// The reference client connects to `address` through a relay that applies
+/// `rules`; the relay hands the connection to the controlled driver.
+async fn controlled_through_relay(address: SocketAddr, rules: Vec<Rule>) -> Result<Link, Failure> {
+    let driver_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| format!("cannot listen for the driver: {error}"))?;
+    let driver_address = driver_listener.local_addr()?;
+    let peer = accept_one(address).await?;
+    tokio::spawn(async move {
+        let driver = TcpStream::connect(driver_address).await?;
+        bridge(driver, peer, &rules).await
+    });
+    let (stream, _) = timeout(ACCEPT, driver_listener.accept())
+        .await
+        .map_err(|_| "the relay did not connect to the driver")??;
+    Ok(Link::spawn(
+        stream,
+        LinkConfig::with_defaults(Role::Controlled),
+    ))
+}
+
+/// The connection ended with the t1 expiry.
+fn expect_t1_expiry(error: &TransportError) -> Result<(), Failure> {
+    match error {
+        TransportError::Closed(CloseReason::T1Expired) => {
+            println!("closed by t1");
+            Ok(())
+        }
+        other => Err(format!("expected the t1 expiry, got: {other}").into()),
+    }
+}
+
+/// The peer closed the connection (the stream ended or failed).
+fn expect_peer_closed(error: &TransportError) -> Result<(), Failure> {
+    match error {
+        TransportError::PeerClosed | TransportError::Io(_) => {
+            println!("closed by the peer: {error}");
+            Ok(())
+        }
+        other => Err(format!("expected the peer to close, got: {other}").into()),
+    }
+}
+
+/// The time since `since` is `expected` seconds, within 2 s.
+fn check_elapsed(since: Instant, expected: f64) -> Result<(), Failure> {
+    let elapsed = since.elapsed().as_secs_f64();
+    println!("{elapsed:.1} s after the event");
+    if (elapsed - expected).abs() <= 2.0 {
+        Ok(())
+    } else {
+        Err(format!("after {elapsed:.1} s, expected about {expected} s").into())
+    }
+}
+
+/// d1: the relay drops every frame from the peer. The start act is never
+/// confirmed, and t1 closes the connection 15 s after it.
+async fn controlling_t1_silent(address: SocketAddr) -> Result<(), Failure> {
+    let rules = vec![rule(Toward::Driver, Kind::Any, 0, None, Fault::Drop)];
+    let link = controlling_through_relay(address, rules).await?;
+    let sent = Instant::now();
+    link.command(Command::StartDt).await?;
+    let error = link.closed_by_itself(Duration::from_secs(30)).await?;
+    expect_t1_expiry(&error)?;
+    check_elapsed(sent, 15.0)
+}
+
+/// d1: the relay delays the peer's I frames by 3 s. The acknowledgement of our
+/// interrogation comes within t1, so the connection stays open.
+async fn controlling_ack_within_t1(address: SocketAddr) -> Result<(), Failure> {
+    let delay = Fault::Delay(Duration::from_secs(3));
+    let rules = vec![rule(Toward::Driver, Kind::Information, 0, None, delay)];
+    let mut link = controlling_through_relay(address, rules).await?;
+    link.command(Command::StartDt).await?;
+    link.expect("STARTDT con", REPLY, transfer_is(TransferState::Started))
+        .await?;
+    link.command(Command::SendAsdu(interrogation(cause::ACTIVATION)?))
+        .await?;
+    link.expect(
+        "ACTTERM of the interrogation",
+        REPLY,
+        interrogation_with_cause(cause::ACTIVATION_TERMINATION),
+    )
+    .await?;
+    sleep(Duration::from_secs(2)).await;
+    if link.ended() {
+        return Err("the connection closed although the acknowledgement came within t1".into());
+    }
+    link.finish().await
+}
+
+/// d1: the relay delays the peer's I frames by 20 s. The interrogation is not
+/// acknowledged within t1 (15 s), and the connection closes.
+async fn controlling_ack_beyond_t1(address: SocketAddr) -> Result<(), Failure> {
+    let delay = Fault::Delay(Duration::from_secs(20));
+    let rules = vec![rule(Toward::Driver, Kind::Information, 0, None, delay)];
+    let mut link = controlling_through_relay(address, rules).await?;
+    link.command(Command::StartDt).await?;
+    link.expect("STARTDT con", REPLY, transfer_is(TransferState::Started))
+        .await?;
+    let sent = Instant::now();
+    link.command(Command::SendAsdu(interrogation(cause::ACTIVATION)?))
+        .await?;
+    let error = link.closed_by_itself(Duration::from_secs(30)).await?;
+    expect_t1_expiry(&error)?;
+    check_elapsed(sent, 15.0)
+}
+
+/// d1: the relay drops our second interrogation. The peer receives the third one
+/// out of sequence and closes the connection (figure 11).
+async fn controlling_dropped(address: SocketAddr) -> Result<(), Failure> {
+    let rules = vec![rule(
+        Toward::Peer,
+        Kind::Information,
+        1,
+        Some(1),
+        Fault::Drop,
+    )];
+    let mut link = controlling_through_relay(address, rules).await?;
+    link.command(Command::StartDt).await?;
+    link.expect("STARTDT con", REPLY, transfer_is(TransferState::Started))
+        .await?;
+    for _ in 0..3 {
+        link.command(Command::SendAsdu(interrogation(cause::ACTIVATION)?))
+            .await?;
+    }
+    let error = link.closed_by_itself(Duration::from_secs(30)).await?;
+    expect_peer_closed(&error)
+}
+
+/// d1: the relay duplicates our first interrogation. The peer receives the same
+/// N(S) twice and closes the connection (figure 11).
+async fn controlling_duplicated(address: SocketAddr) -> Result<(), Failure> {
+    let rules = vec![rule(
+        Toward::Peer,
+        Kind::Information,
+        0,
+        Some(1),
+        Fault::Duplicate,
+    )];
+    let mut link = controlling_through_relay(address, rules).await?;
+    link.command(Command::StartDt).await?;
+    link.expect("STARTDT con", REPLY, transfer_is(TransferState::Started))
+        .await?;
+    link.command(Command::SendAsdu(interrogation(cause::ACTIVATION)?))
+        .await?;
+    let error = link.closed_by_itself(Duration::from_secs(30)).await?;
+    expect_peer_closed(&error)
+}
+
+/// d2: the relay drops the acknowledgements of the reference client. Our
+/// spontaneous values are never acknowledged, and t1 closes the connection 15 s
+/// after the last one.
+async fn controlled_t1_silent(address: SocketAddr) -> Result<(), Failure> {
+    let rules = vec![rule(
+        Toward::Driver,
+        Kind::Supervisory,
+        0,
+        None,
+        Fault::Drop,
+    )];
+    let mut link = controlled_through_relay(address, rules).await?;
+    link.expect(
+        "STARTDT from the peer",
+        ACCEPT,
+        transfer_is(TransferState::Started),
+    )
+    .await?;
+    // The peer's own interrogation goes out at once with N(R) = 0 if our frames come after
+    // it: then the relay sees no acknowledgement of ours in it.
+    sleep(Duration::from_secs(1)).await;
+    for address in 672u32..675 {
+        link.command(Command::SendAsdu(single_point(address, true)?))
+            .await?;
+    }
+    let sent = Instant::now();
+    let error = link.closed_by_itself(Duration::from_secs(30)).await?;
+    expect_t1_expiry(&error)?;
+    check_elapsed(sent, 15.0)
+}
+
+/// d2: the relay holds our acknowledgements for 20 s. The reference client's t1
+/// for its interrogation expires first, and it closes the connection (figure 12).
+async fn controlled_ack_late(address: SocketAddr) -> Result<(), Failure> {
+    let delay = Fault::Delay(Duration::from_secs(20));
+    let rules = vec![rule(Toward::Peer, Kind::Supervisory, 0, None, delay)];
+    let mut link = controlled_through_relay(address, rules).await?;
+    link.expect(
+        "STARTDT from the peer",
+        ACCEPT,
+        transfer_is(TransferState::Started),
+    )
+    .await?;
+    link.expect(
+        "interrogation from the peer",
+        ACCEPT,
+        interrogation_with_cause(cause::ACTIVATION),
+    )
+    .await?;
+    let received = Instant::now();
+    let error = link.closed_by_itself(Duration::from_secs(40)).await?;
+    expect_peer_closed(&error)?;
+    check_elapsed(received, 15.0)
+}
+
+/// d2: the relay drops our second spontaneous value. The reference client
+/// receives the third one out of sequence and closes the connection (figure 11).
+async fn controlled_dropped(address: SocketAddr) -> Result<(), Failure> {
+    let rules = vec![rule(
+        Toward::Peer,
+        Kind::Information,
+        1,
+        Some(1),
+        Fault::Drop,
+    )];
+    let mut link = controlled_through_relay(address, rules).await?;
+    link.expect(
+        "STARTDT from the peer",
+        ACCEPT,
+        transfer_is(TransferState::Started),
+    )
+    .await?;
+    for address in 672u32..675 {
+        link.command(Command::SendAsdu(single_point(address, true)?))
+            .await?;
+    }
+    let error = link.closed_by_itself(Duration::from_secs(30)).await?;
+    expect_peer_closed(&error)
+}
+
+/// d2: the relay duplicates the first frame of the reference client. Our session
+/// takes the copy for a frame out of sequence and closes with a sequence error.
+async fn controlled_duplicated(address: SocketAddr) -> Result<(), Failure> {
+    let rules = vec![rule(
+        Toward::Driver,
+        Kind::Information,
+        0,
+        Some(1),
+        Fault::Duplicate,
+    )];
+    let link = controlled_through_relay(address, rules).await?;
+    let error = link.closed_by_itself(Duration::from_secs(30)).await?;
+    match error {
+        TransportError::Closed(CloseReason::SequenceError { expected, received })
+            if expected == SequenceNumber::new(1).ok_or("1 is in range")?
+                && received == SequenceNumber::new(0).ok_or("0 is in range")? =>
+        {
+            println!(
+                "closed on a sequence error: expected {}, received {}",
+                expected.value(),
+                received.value()
+            );
+            Ok(())
+        }
+        other => Err(format!("expected a sequence error, got: {other}").into()),
+    }
 }
