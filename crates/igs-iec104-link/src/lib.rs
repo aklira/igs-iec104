@@ -18,3 +18,8 @@
         clippy::arithmetic_side_effects
     )
 )]
+
+/// Session parameters: timeouts t0 to t3, window sizes k and w, and the role (task L1).
+pub mod config;
+
+pub use config::{ConfigError, LinkConfig, Parameters, Recommendation, Role};

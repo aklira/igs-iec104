@@ -136,6 +136,21 @@ substituted time. The API names it `substituted`.
 - **Test**: `apci::tests::a_bad_start_octet_is_a_sticky_framing_error`,
   `apci::tests::lengths_outside_4_to_253_are_framing_errors`.
 
+### D-012 — Recommended ranges are warnings, not errors
+
+- **Decision**: the ranges that the standard gives as maximum ranges are errors (t0, t1, t2 from 1
+  to 255 s, t2 below t1, k and w from 1 to 32767, whole seconds). Two ranges the standard calls
+  recommendations are reported, but accepted: t3 above 48 hours, and w above two thirds of k.
+  The lower bound of t3 (1 s) is an error: it is the resolution of the parameter, and a zero
+  time-out is not a time-out.
+- **Sources**: 104 §5.5 (maximum range of k and w; "recommendation: w should not exceed two-thirds
+  of k"); 104 §9.6, definition of time-outs (maximum range for t0 to t2; "recommended range for
+  time-out t3: 1 s to 48 h, resolution 1 s").
+- **Confidence**: high for the split between maximum ranges and recommendations; the wording of the
+  standard is explicit in both places.
+- **Test**: `config::tests::window_above_two_thirds_of_k_is_a_recommendation_not_an_error`,
+  `config::tests::t3_above_48_hours_is_a_recommendation_not_an_error`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

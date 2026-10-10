@@ -386,7 +386,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | C5 APCI framing | [x] |
 | C6 Property tests | [x] |
 | C7 Fuzzing ⛔ | [ ] |
-| L1 Parameters | [ ] |
+| L1 Parameters | [x] |
 | L2 State machine core | [ ] |
 | L3 Timers and tests | [ ] |
 | L4 Interop APCI ⛔ | [ ] |

@@ -20,6 +20,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | C5 APCI framing | Done, committed | log `docs/ai-log/C5.md`, decision D-011 in `PROVENANCE.md` |
 | C6 Property tests | Done, committed | log `docs/ai-log/C6.md`; `proptest` added as a dev-dependency (approved) |
 | C7 Fuzzing ⛔ | Partly done: harness committed, 10 min per target without crash; 24 h campaign pending (maintainer gate) | log `docs/ai-log/C7.md`; `libfuzzer-sys` and the `NCSA` licence approved |
+| L1 Parameters | Done, committed | log `docs/ai-log/L1.md`, decision D-012 in `PROVENANCE.md` (recommendations are warnings) |
 
 ## Decisions taken (beyond the plan)
 
@@ -63,6 +64,8 @@ decisions:
   maintainer should check figures 6 to 8 against the PDF.
 - C7 (fuzzing): the harness is committed and passes its ten-minute check on both
   targets. The 24-hour campaign is a maintainer gate (see `docs/ai-log/C7.md` for the
-  commands). The next task that needs no gate is L1 (link parameters, depends on C5).
+  commands).
+- L1 (parameters) is done: `LinkConfig` in `igs-iec104-link`. The next task that needs
+  no gate is L2 (state machine core).
 - The generated profile is ready. `object_size_bits(125) == None` is handled by
   the `FileSegment` value (length from LOS, see C4).
