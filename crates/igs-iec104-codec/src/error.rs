@@ -43,6 +43,21 @@ pub enum DecodeError {
         /// Octets left over.
         extra: usize,
     },
+    /// A frame does not start with the start octet 68H.
+    FrameStart {
+        /// The octet found where the start was expected.
+        found: u8,
+    },
+    /// The length of a frame is outside 4 to 253 octets (IEC 60870-5-104 §5).
+    FrameLength {
+        /// The length octet.
+        length: u8,
+    },
+    /// The four control octets match no format of IEC 60870-5-104 §5.
+    InvalidControlField {
+        /// The control octets, in order.
+        control: [u8; 4],
+    },
 }
 
 impl fmt::Display for DecodeError {
@@ -64,6 +79,13 @@ impl fmt::Display for DecodeError {
             }
             Self::TrailingOctets { extra } => {
                 write!(f, "{extra} octets follow the information objects")
+            }
+            Self::FrameStart { found } => write!(f, "frame starts with {found:#04X}, not 68H"),
+            Self::FrameLength { length } => {
+                write!(f, "frame length {length} is outside 4 to 253")
+            }
+            Self::InvalidControlField { control } => {
+                write!(f, "invalid control field {control:02X?}")
             }
         }
     }

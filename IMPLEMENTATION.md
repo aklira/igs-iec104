@@ -383,7 +383,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | C2 Information elements | [x] |
 | C3 ASDU header | [x] |
 | C4 ASDU bodies | [x] |
-| C5 APCI framing | [ ] |
+| C5 APCI framing | [x] |
 | C6 Property tests | [ ] |
 | C7 Fuzzing ⛔ | [ ] |
 | L1 Parameters | [ ] |

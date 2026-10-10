@@ -125,6 +125,17 @@ substituted time. The API names it `substituted`.
 - **Confidence**: high.
 - **Test**: `asdu::tests::decoding_rejects_an_asdu_over_249_octets`.
 
+### D-011 — Framing errors end the stream
+
+- **Decision**: a frame that does not start with 68H, or whose length is outside 4 to 253, is a
+  framing error. The frame decoder then stays failed: every later call returns the same error, and
+  the connection must be closed. It never tries to resynchronise on a later 68H.
+- **Sources**: 104 §5 defines the start octet, the length (4 to 253) and the control field. It does
+  not say what a receiver does after a framing error: the text read for this decision is silent.
+- **Confidence**: medium (the standard is silent; the choice avoids decoding from a wrong boundary).
+- **Test**: `apci::tests::a_bad_start_octet_is_a_sticky_framing_error`,
+  `apci::tests::lengths_outside_4_to_253_are_framing_errors`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |
