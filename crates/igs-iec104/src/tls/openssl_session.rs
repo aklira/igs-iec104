@@ -52,6 +52,8 @@ const SSL_KEY_UPDATE_REQUESTED: c_int = 1;
 const SSL3_RT_HANDSHAKE: c_int = 22;
 /// The handshake message type of KeyUpdate (RFC 8446, section 4).
 const KEY_UPDATE_MESSAGE: u8 = 24;
+/// The handshake message type of HelloRequest (RFC 5246, section 7.4.1.1).
+const HELLO_REQUEST: u8 = 0;
 /// The `request_update` field of a KeyUpdate: `update_not_requested` (the answer) and
 /// `update_requested` (the request), as RFC 8446 defines them.
 const UPDATE_NOT_REQUESTED: u8 = 0;
@@ -67,6 +69,8 @@ pub struct Observed {
     answered: AtomicU32,
     /// The KeyUpdate messages that this side received, with `update_requested`: the peer's requests.
     requested_by_peer: AtomicU32,
+    /// The HelloRequest messages that this side received: the station's requests of a renegotiation.
+    hello_requests: AtomicU32,
     /// Where the events of a ClientHello go. None for a client, which receives no ClientHello.
     events: Option<Arc<dyn SecurityEvents>>,
     /// A ClientHello offered a CBC suite without encrypt-then-MAC: the session is terminated.
@@ -83,6 +87,7 @@ impl Observed {
             written: AtomicU32::new(0),
             answered: AtomicU32::new(0),
             requested_by_peer: AtomicU32::new(0),
+            hello_requests: AtomicU32::new(0),
             events,
             mac_then_encrypt: AtomicBool::new(false),
             psk_ke_only: AtomicBool::new(false),
@@ -102,6 +107,11 @@ impl Observed {
     /// The KeyUpdate messages that the peer wrote with `update_requested`.
     pub fn requested_by_peer(&self) -> u32 {
         self.requested_by_peer.load(Ordering::SeqCst)
+    }
+
+    /// The HelloRequest messages that this side received (clause 7.4.5).
+    pub fn hello_requests(&self) -> u32 {
+        self.hello_requests.load(Ordering::SeqCst)
     }
 
     /// True when a ClientHello offered a CBC suite without encrypt-then-MAC (clause 7.5.7).
@@ -150,6 +160,9 @@ unsafe extern "C" fn observe_messages(
     let observed = unsafe { &*arg.cast::<Observed>() };
     match message.first() {
         Some(&CLIENT_HELLO) if write_p == 0 => observe_client_hello(observed, message),
+        Some(&HELLO_REQUEST) if write_p == 0 => {
+            observed.hello_requests.fetch_add(1, Ordering::SeqCst);
+        }
         Some(&KEY_UPDATE_MESSAGE) => match (write_p, message.get(4)) {
             (1, Some(&UPDATE_REQUESTED)) => {
                 observed.written.fetch_add(1, Ordering::SeqCst);

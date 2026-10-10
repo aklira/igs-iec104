@@ -70,6 +70,9 @@ const SIGALGS: &str = "rsa_pss_rsae_sha256:rsa_pss_pss_sha256:ecdsa_secp256r1_sh
 /// The message of the OpenSSL reason for a client that sent no certificate when one was required.
 const NO_CLIENT_CERTIFICATE: &str = "peer did not return a certificate";
 
+/// The session ID context of the station (see `OpensslBackend::new`).
+const SESSION_ID_CONTEXT: &[u8] = b"igs-iec104 station";
+
 /// The OpenSSL messages of a handshake in which no signature algorithm is in common: the TLS 1.2 and
 /// the TLS 1.3 forms (clause 6.4.4.6).
 const NO_COMMON_SIGNATURE: [&str; 2] = [
@@ -111,6 +114,11 @@ impl OpensslBackend {
         let mut server = SslContextBuilder::new(SslMethod::tls_server())
             .map_err(|error| TlsError::Invalid(error.to_string()))?;
         configure(&mut server, settings, &roots)?;
+        // A station that asks for the certificate of its peer needs a session ID context for a
+        // renegotiation: OpenSSL refuses a resumption of a session that has none (clause 7.4.5).
+        server
+            .set_session_id_context(SESSION_ID_CONTEXT)
+            .map_err(|error| TlsError::Invalid(error.to_string()))?;
         let server_judge = judge(settings, &events)?;
         server.set_verify_callback(
             SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
@@ -421,13 +429,14 @@ impl OpensslBackend {
     }
 
     /// Secures an outgoing connection, and returns the stream of the backend.
-    /// The timers of the streams that this backend secures.
-    fn timers(&self) -> Timers {
+    /// The timers of the streams that this backend secures. `calling` is true for a client.
+    fn timers(&self, calling: bool) -> Timers {
         Timers {
             interval: self.renegotiation,
             key_update: self.key_update,
             response: self.response,
             events: Arc::clone(&self.events),
+            calling,
         }
     }
 
@@ -471,7 +480,7 @@ impl OpensslBackend {
             return Err(TlsError::Handshake(error.to_string()));
         }
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");
-        Ok(OpensslStream::new(stream, observed, self.timers()))
+        Ok(OpensslStream::new(stream, observed, self.timers(true)))
     }
 
     /// Secures an accepted connection, and returns the stream of the backend.
@@ -501,7 +510,7 @@ impl OpensslBackend {
             ));
         }
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");
-        Ok(OpensslStream::new(stream, observed, self.timers()))
+        Ok(OpensslStream::new(stream, observed, self.timers(false)))
     }
 }
 
@@ -534,6 +543,13 @@ pub struct OpensslStream {
     key_interval: Option<Duration>,
     response: Duration,
     events: Arc<dyn SecurityEvents>,
+    /// This side is the calling entity (the client): it renegotiates at its interval only when the
+    /// station has not asked for a renegotiation in it (clause 7.4.5).
+    calling: bool,
+    /// The HelloRequests seen when the interval was last checked.
+    seen_hello_requests: u32,
+    /// The renegotiations that this side asked for.
+    requested: u32,
     due: Instant,
     key_due: Instant,
     /// The time by which the peer must answer the renegotiation that this side asked for (clause 7.4.5).
@@ -578,6 +594,8 @@ struct Timers {
     key_update: Option<Duration>,
     response: Duration,
     events: Arc<dyn SecurityEvents>,
+    /// This side is the calling entity of the session: the client (clause 7.4.5).
+    calling: bool,
 }
 
 impl OpensslStream {
@@ -605,6 +623,9 @@ impl OpensslStream {
             key_interval,
             response: timers.response,
             events: timers.events,
+            calling: timers.calling,
+            seen_hello_requests: 0,
+            requested: 0,
             due,
             key_due,
             answer: None,
@@ -618,6 +639,11 @@ impl OpensslStream {
     /// The number of renegotiations that have started on the session so far, on either side.
     pub fn renegotiations(&self) -> i64 {
         openssl_session::total(self.inner.ssl())
+    }
+
+    /// The renegotiations that this side asked for, as opposed to those of the peer.
+    pub fn renegotiations_requested(&self) -> u32 {
+        self.requested
     }
 
     /// The KeyUpdate messages of the session: the ones written, the answers received, and the requests
@@ -653,9 +679,18 @@ impl OpensslStream {
             return Ok(());
         }
         self.due = now.checked_add(interval).unwrap_or(now);
+        // Clause 7.4.5: the calling entity renegotiates itself only when no HelloRequest arrived in the
+        // interval. The station's renegotiation answers the HelloRequest it sent.
+        let requested = self.observed.hello_requests();
+        let station_asked = requested > self.seen_hello_requests;
+        self.seen_hello_requests = requested;
+        if self.calling && station_asked {
+            return Ok(());
+        }
         if !openssl_session::request(self.inner.ssl()) {
             return Err(io::Error::other("the session refused a renegotiation"));
         }
+        self.requested = self.requested.saturating_add(1);
         self.answer = Some(now.checked_add(self.response).unwrap_or(now));
         Ok(())
     }

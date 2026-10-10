@@ -429,3 +429,43 @@ async fn a_peer_that_does_not_answer_a_key_update_ends_the_session_with_the_alar
         "the handshake notice, then the alarm of an unanswered key update"
     );
 }
+
+#[tokio::test]
+async fn a_client_does_not_renegotiate_while_the_station_renegotiates_in_time() {
+    // The station asks for a renegotiation every 50 ms. The client's interval is 300 ms, and the
+    // station's requests come within each of its intervals: the client asks for none (clause 7.4.5).
+    let server = backend(
+        fixture!("server.pem"),
+        fixture!("server.key"),
+        Some(Duration::from_millis(50)),
+        false,
+    );
+    let client = backend(
+        fixture!("client.pem"),
+        fixture!("client.key"),
+        Some(Duration::from_millis(300)),
+        false,
+    );
+    let (mut client_stream, mut server_stream) = session(&client, &server).await;
+    let mut client_buffer = [0u8; 16];
+    let mut server_buffer = [0u8; 16];
+    let (_client_read, _server_read) = tokio::join!(
+        timeout(
+            Duration::from_millis(700),
+            client_stream.read(&mut client_buffer)
+        ),
+        timeout(
+            Duration::from_millis(700),
+            server_stream.read(&mut server_buffer)
+        ),
+    );
+    assert!(
+        server_stream.renegotiations_requested() >= 1,
+        "the station asked for renegotiations"
+    );
+    assert_eq!(
+        client_stream.renegotiations_requested(),
+        0,
+        "the client asked for none"
+    );
+}
