@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from igs_bench import capture, probe
+from igs_bench import capture, client, probe
 from igs_bench.compose import Bench
 
 
@@ -48,3 +48,8 @@ def probe_binary():
     """The static L4/L5 probe, built once per session into bench/bin."""
     return probe.build()
 
+
+@pytest.fixture(scope="session")
+def client_binary():
+    """The igs104-client binary, built once per session into bench/bin (T4)."""
+    return client.build()

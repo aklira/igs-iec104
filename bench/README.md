@@ -65,6 +65,7 @@ The first run pulls the images (about 600 MB).
 | `igs_bench/capture.py` | stops tcpdump and returns the capture path |
 | `igs_bench/tshark.py` | `tshark -T json` decoding per APDU, error check, frame matching |
 | `igs_bench/probe.py` | builds the L4 probe (static musl binary) into `bin/` |
+| `igs_bench/client.py` | builds the `igs104-client` binary (static musl) into `bin/` (T4) |
 | `probe/` | the L4 probe: a Rust program that runs igs-iec104 scenarios (not published) |
 | `tests/` | scenarios, one pytest file per task |
 
@@ -76,6 +77,10 @@ The first run pulls the images (about 600 MB).
 | `tests/test_l4_interop.py` | L4 | igs-iec104 against both reference peers: STARTDT, interrogation and STOPDT; TESTFR in both directions; the window of k; the acknowledgement after w and within t2. The probe's capture is checked frame by frame |
 
 | `tests/test_l5_faults.py` | L5 | fault injection between igs-iec104 and both reference peers: t1 expiry with a silent peer, late acknowledgements within and beyond t1, dropped and duplicated frames (disturbed sequence). The relay in the probe applies the faults |
+| `tests/test_t4_client_matrix.py` | T4 | `igs104-client` against the reference server, one row per procedure: start and stop, interrogations, counter, read, clock, test, the six commands with select and execute, with and without time tag; and a refused connection. Each row checks the exit status, the message and the answers on the wire, including the P/N bit. Five rows are positive; the others are refusals by the reference server (see `docs/ai-log/T4.md`) |
+
+T4 scenarios need the static client: `client.build()` runs the same build for
+`igs104-client`, and the probe container runs it from `bench/bin`.
 
 L4 scenarios need the static probe: `probe.build()` runs
 `cargo build --release --target x86_64-unknown-linux-musl` (add the target with

@@ -7,8 +7,9 @@
 //! the ASDUs it receives.
 //!
 //! Each procedure exits with 0 once its confirmations arrive within the timeout,
-//! and with 1 otherwise. `monitor` starts the data transfer and prints everything
-//! until its `--for` duration passes, or until the process is stopped.
+//! and with 1 otherwise: a refusal by the station, a timeout, or a lost connection.
+//! `monitor` starts the data transfer and prints everything until its `--for`
+//! duration passes, or until the process is stopped.
 //!
 //! Times are read from this machine's clock in UTC.
 
@@ -59,6 +60,8 @@ enum Action {
         #[arg(long = "for")]
         duration: Option<u64>,
     },
+    /// Starts the data transfer, then stops it: STARTDT and STOPDT, each confirmed.
+    Stop,
     /// General interrogation (§7.5), of the whole station or of one group (1 to 16).
     Interrogate {
         /// The group, 1 to 16. The whole station when absent.
@@ -202,6 +205,11 @@ async fn run(cli: Cli) -> Outcome {
     match cli.action {
         Action::Monitor { duration } => {
             monitor(&mut client, duration.map(Duration::from_secs)).await
+        }
+        Action::Stop => {
+            start(&mut client, confirm).await?;
+            accepted(client.stop_data_transfer().await)?;
+            wait_for(&mut client, confirm, "the stop confirmation", judge_stopped).await
         }
         Action::Interrogate { group } => {
             start(&mut client, confirm).await?;
@@ -406,6 +414,14 @@ fn judge_started(event: &Event) -> Option<Outcome> {
     }
 }
 
+/// The stop is confirmed when the transfer state becomes `Stopped`.
+fn judge_stopped(event: &Event) -> Option<Outcome> {
+    match event {
+        Event::Delivery(Delivery::Transfer(TransferState::Stopped)) => Some(Ok(())),
+        _ => None,
+    }
+}
+
 /// Starts the data transfer and prints everything received, for `duration` or until the process stops.
 async fn monitor(client: &mut Client, duration: Option<Duration>) -> Outcome {
     accepted(client.start_data_transfer().await)?;
@@ -451,13 +467,19 @@ async fn wait_for_execution(
     }
 }
 
-/// Judges an event as the answer to a request. The expected cause confirms it; a
-/// negative cause (44 to 47, §8.9) is a refusal; any other event is not an answer.
+/// Judges an event as the answer to a request. The expected cause confirms it. A
+/// negative confirmation (the P/N bit, 101 7.2.3) refuses the request whatever its
+/// cause, and so does a negative cause (44 to 47, §8.9). Any other event is not an answer.
 fn judge_answer(code: u8, kind: fn(&Body) -> bool) -> impl Fn(&Event) -> Option<Outcome> {
     move |event| match event {
         Event::Delivery(Delivery::Asdu(asdu)) if kind(&asdu.body) => {
             let got = asdu.cot.cause();
-            if got == code {
+            if asdu.cot.negative {
+                Some(Err(format!(
+                    "the station refused the request: negative {} (cause {got})",
+                    cause_name(got)
+                )))
+            } else if got == code {
                 Some(Ok(()))
             } else if (44..=47).contains(&got) {
                 Some(Err(format!(
@@ -523,8 +545,13 @@ fn print_event(event: &Event) {
 /// One ASDU, decoded: its type, its cause, its common address and its objects.
 fn describe(asdu: &Asdu) -> String {
     let code = asdu.cot.cause();
+    let polarity = if asdu.cot.negative {
+        "negative"
+    } else {
+        "positive"
+    };
     format!(
-        "{:?} cause {code} ({}) common address {}: {:?}",
+        "{:?} cause {code} ({}, {polarity}) common address {}: {:?}",
         asdu.type_id(),
         cause_name(code),
         asdu.common_address.value(),
@@ -647,6 +674,53 @@ fn days_in_month(year: u64, month: u64) -> u64 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use igs_iec104_codec::asdu::{InformationObject, Objects};
+    use igs_iec104_codec::header::CauseOfTransmission;
+
+    /// An answer to a general interrogation, with the given cause and P/N bit.
+    fn interrogation_answer(cause: u8, negative: bool) -> Event {
+        let mut cot = CauseOfTransmission::new(cause).expect("a cause of transmission");
+        cot.negative = negative;
+        let address = InformationObjectAddress::new(0).expect("an address");
+        Event::Delivery(Delivery::Asdu(Asdu {
+            cot,
+            common_address: CommonAddress::new(45),
+            body: Body::C_IC_NA_1(Objects::Individual(vec![InformationObject {
+                address,
+                value: Qoi::STATION,
+            }])),
+        }))
+    }
+
+    fn judge_interrogation() -> impl Fn(&Event) -> Option<Outcome> {
+        judge_answer(cause::ACTIVATION_CONFIRMATION, |b| {
+            matches!(b, Body::C_IC_NA_1(_))
+        })
+    }
+
+    #[test]
+    fn a_positive_confirmation_is_a_success() {
+        let judge = judge_interrogation();
+        assert!(matches!(
+            judge(&interrogation_answer(cause::ACTIVATION_CONFIRMATION, false)),
+            Some(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn a_negative_confirmation_is_a_refusal() {
+        let judge = judge_interrogation();
+        assert!(matches!(
+            judge(&interrogation_answer(cause::ACTIVATION_CONFIRMATION, true)),
+            Some(Err(_))
+        ));
+    }
+
+    #[test]
+    fn an_answer_of_another_cause_is_not_judged() {
+        let judge = judge_interrogation();
+        assert!(judge(&interrogation_answer(cause::ACTIVATION, false)).is_none());
+    }
 
     #[test]
     fn a_unix_time_becomes_the_utc_cp56_time() {
