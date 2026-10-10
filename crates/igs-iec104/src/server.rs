@@ -12,11 +12,12 @@
 //! answered by a [`Responder`].
 //!
 //! The events of the image wait in its queue until the started connection takes them. When a
-//! connection is started, the others that are not stopped are closed (§10.7). The ASDUs of a
+//! connection is started, the others that are not stopped are closed (§10.7). The events of a
 //! closed connection that the peer did not acknowledge, and those it had not sent yet, are
 //! sent again on the connection that takes over, before the newer events (§10.5, §10.6). So
 //! an event raised while no connection is started, or while a switchover is in progress, is
-//! not lost, unless the queue of the image overflows.
+//! not lost, unless the queue of the image overflows. The answers of a closed connection are
+//! not sent again: they belong to the requests of that connection (D-021).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -29,7 +30,7 @@ use std::time::Duration;
 use igs_iec104_codec::asdu::Asdu;
 use igs_iec104_codec::elements::Coi;
 use igs_iec104_codec::formats::Cp56Time2a;
-use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
+use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
 use igs_iec104_link::{ConfigError, LinkConfig, Parameters, Rejection, Role, TransferState};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Notify};
@@ -134,9 +135,9 @@ struct Group {
     members: BTreeMap<u64, Member>,
     /// The connection whose data transfer is started, if any.
     started: Option<u64>,
-    /// ASDUs to send on the started connection before the events of the image: those of
+    /// Events to send on the started connection before the events of the image: those of
     /// the connections closed by a switchover that the peer did not acknowledge, and those
-    /// they had not sent (§10.5, §10.6).
+    /// they had not sent (§10.5, §10.6). The answers of a closed connection are not kept (D-021).
     carry: VecDeque<Asdu>,
     next_id: u64,
 }
@@ -181,7 +182,7 @@ impl Group {
         }
     }
 
-    /// Removes connection `id`, and keeps the ASDUs it leaves unsent for the connection that
+    /// Removes connection `id`, and keeps the events it leaves unsent for the connection that
     /// takes over.
     fn leave(&mut self, id: u64, leftover: impl IntoIterator<Item = Asdu>) {
         self.members.remove(&id);
@@ -461,6 +462,10 @@ async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Stati
     let mut leftover = connection.unacknowledged;
     leftover.extend(connection.returned);
     leftover.extend(connection.pending);
+    // The image queues its events with cause 3 (spontaneous). The answers of this connection
+    // belong to its requests, and its end of initialization to its start: neither is sent
+    // again on the connection that takes over (D-021).
+    leftover.retain(|asdu| asdu.cot.cause() == cause::SPONTANEOUS);
     lock(&station.process.group).leave(id, leftover);
     // The connection that takes over may be waiting for the events of the leftover ASDUs.
     station.process.queued.notify_one();

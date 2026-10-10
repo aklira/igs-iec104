@@ -44,6 +44,10 @@ All notable changes to this project are recorded in this file. The format follow
   an ASDU before the start of the data transfer, when the confirmation and the ASDU came in one read.
 - The OpenSSL backend configures on OpenSSL 3.0, which rejects a signature algorithm list that names
   one scheme twice.
+- A station does not send the answers of a closed connection on the connection that takes over. A
+  controlling station took such an answer for the answer to its new request: a select could be
+  refused by the confirmation of an earlier execution (D-021 in PROVENANCE.md). The events are
+  still sent again.
 - A station renegotiates a TLS 1.2 session more than once with a client certificate: the station sets a
   session ID context, which OpenSSL needs for the second renegotiation.
 

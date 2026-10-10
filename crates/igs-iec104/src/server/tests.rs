@@ -11,11 +11,11 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use igs_iec104_codec::apci::{Apdu, UnnumberedFunction};
+use igs_iec104_codec::apci::{Apdu, SequenceNumber, UnnumberedFunction};
 use igs_iec104_codec::asdu::{Asdu, Body, Objects};
-use igs_iec104_codec::elements::{Coi, Qds, ShortFloat};
+use igs_iec104_codec::elements::{Coi, Qds, Qoi, ShortFloat};
 use igs_iec104_codec::formats::Cp56Time2a;
-use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
+use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
 use igs_iec104_link::{LinkConfig, Parameters, Role, TransferState};
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::sync::{mpsc, Notify};
@@ -23,6 +23,7 @@ use tokio::time::{sleep, timeout};
 
 use super::respond::{Handler, Operation, Refusal};
 use super::{serve, Group, Process, ServerHandle, Station};
+use crate::procedures;
 use crate::process_image::{PointValue, ProcessImage};
 use crate::transport::{run, Command, Delivery};
 
@@ -196,6 +197,29 @@ impl Controller {
     async fn wait_closed(&mut self) {
         while self.next().await.is_some() {}
     }
+
+    /// The causes of the ASDUs received up to the float `value`, which must come, and that float
+    /// included.
+    async fn causes_before(&mut self, value: f32) -> Vec<u8> {
+        let mut causes = Vec::new();
+        loop {
+            match self.next().await {
+                Some(Delivery::Asdu(asdu)) => {
+                    let arrived = matches!(
+                        &asdu.body,
+                        Body::M_ME_NC_1(Objects::Individual(items))
+                            if items.first().is_some_and(|item| item.value.0.as_f32() == value)
+                    );
+                    causes.push(asdu.cot.cause());
+                    if arrived {
+                        return causes;
+                    }
+                }
+                Some(_) => {}
+                None => panic!("the connection ended before the value {value}"),
+            }
+        }
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -248,6 +272,39 @@ async fn a_switchover_with_in_flight_frames_sends_them_again_on_the_new_connecti
     publish(&handle, 7);
     assert_eq!(second.next_value().await, 6.0);
     assert_eq!(second.next_value().await, 7.0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_answers_of_a_connection_are_not_sent_again_on_the_next_one() {
+    // The first connection answers a general interrogation, and an event is published. The peer
+    // acknowledges none of them. The event comes again on the second connection; the answers do
+    // not, and neither does the end of initialization of the first connection.
+    let (station, handle) = station();
+    let mut first = silent_connection(&station).await;
+    start_silent(&mut first).await;
+    settle().await;
+    let request = procedures::interrogation(CommonAddress::new(STATION), Qoi::STATION)
+        .expect("a general interrogation");
+    let frame = Apdu::Information {
+        send: SequenceNumber::ZERO,
+        receive: SequenceNumber::ZERO,
+        asdu: request,
+    }
+    .to_vec()
+    .expect("the request encodes");
+    first.write_all(&frame).await.expect("the station reads");
+    settle().await;
+    publish(&handle, 3);
+    settle().await;
+
+    let mut second = controller(&station);
+    second.start().await;
+    second.wait_started().await;
+    // Only the initialization of the second connection (cause 4), then the event (cause 3).
+    assert_eq!(
+        second.causes_before(3.0).await,
+        vec![cause::INITIALIZED, cause::SPONTANEOUS]
+    );
 }
 
 #[tokio::test(start_paused = true)]

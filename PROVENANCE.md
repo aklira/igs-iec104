@@ -278,6 +278,22 @@ substituted time. The API names it `substituted`.
   `tls_openssl::a_client_that_offers_only_psk_ke_raises_the_alarm_and_is_not_established`,
   `tls_openssl::a_cbc_suite_without_encrypt_then_mac_ends_the_session_with_the_alarm`.
 
+### D-021 — The answers of a closed connection are not sent again
+
+- **Decision**: when a connection ends, the station keeps for the connection that takes over only the
+  events that it had not acknowledged or sent, which are the spontaneous ASDUs (cause 3) of the image. The
+  answers to the requests of the closed connection (confirmations, terminations, the answers to reads) and
+  its end of initialization (cause 4) are dropped.
+- **Why**: a controlling station takes an answer it did not ask for on its new connection as the answer to
+  its new request. A refused execution was followed on the next connection by its stale negative
+  confirmation, which refused a select sent there (reproduced with the client binary against the demo
+  station). The end of initialization is sent again on each started connection, so a copy from an earlier
+  connection would be a duplicate.
+- **Sources**: 104 §10.5 and §10.6, applied to the events as the carry of S3 does (docs/ai-log/S3.md). The
+  clauses were not read again for the answers.
+- **Confidence**: medium. This is the maintainer's choice for the answers; the clauses leave the answers to
+  the application for commands (§10.5, as S3 notes).
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |
