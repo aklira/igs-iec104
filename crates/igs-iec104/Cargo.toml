@@ -20,7 +20,7 @@ arithmetic_side_effects = "deny"
 [dependencies]
 igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
 igs-iec104-link = { path = "../igs-iec104-link", version = "0.1.0" }
-tokio = { version = "1", features = ["io-util", "macros", "net", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
 # test-util gives tokio::time::pause (approved for T1, see docs/ai-log/T1.md).
