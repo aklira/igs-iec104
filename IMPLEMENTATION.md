@@ -410,7 +410,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | S4 `igs104-server` binary | [ ] |
 | S5 Server interop, load and switchover ⛔ | [ ] |
 | X1 TLS | [ ] |
-| X2 Documentation and examples | [ ] |
+| X2 Documentation and examples | [x] |
 | X3 Release readiness ⛔ | [ ] |
 
 Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, L5, T2, T3, T4, S1–S4, S5, X1, X2, C7, X3.

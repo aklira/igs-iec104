@@ -4,9 +4,9 @@ Industrial-grade IEC 60870-5-104 protocol stack for SCADA and telecontrol, writt
 
 **Status: pre-release (0.1.0, not published).** The codec, the link session, the async client and
 controlled station with their redundancy groups, and the two binaries are implemented and tested.
-TLS (IEC 62351-3) is not implemented yet. The demo station `igs104-server` serves a built-in set of
-points; reading them from a file is not available yet. See [CHANGELOG.md](CHANGELOG.md) for the
-details.
+TLS (IEC 62351-3) runs over the rustls backend; the OpenSSL backend is not implemented yet. The
+demo station `igs104-server` serves a built-in set of points; reading them from a file is not
+available yet. See [CHANGELOG.md](CHANGELOG.md) for the details.
 
 ## Quick start
 
@@ -36,8 +36,17 @@ connection is lost:
 cargo run --example redundancy -- 127.0.0.1:2404 127.0.0.1:2405
 ```
 
-The examples are in [`crates/igs-iec104/examples/`](crates/igs-iec104/examples/). The TLS example
-comes with task X1.
+The examples are in [`crates/igs-iec104/examples/`](crates/igs-iec104/examples/).
+
+The TLS example runs a secured station and a secured controlling station in one process. It takes
+five PEM files (the trust anchors, the certificate and key of the station, and those of the
+controlling station). The test material of the crate works:
+
+```bash
+cargo run --example tls -- crates/igs-iec104/tests/fixtures/tls/roots.pem \
+    crates/igs-iec104/tests/fixtures/tls/server.pem crates/igs-iec104/tests/fixtures/tls/server.key \
+    crates/igs-iec104/tests/fixtures/tls/client.pem crates/igs-iec104/tests/fixtures/tls/client.key
+```
 
 ## Binaries
 

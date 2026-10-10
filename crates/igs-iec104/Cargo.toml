@@ -41,6 +41,11 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "
 # proptest is the dev dependency approved for C6 (docs/ai-log/C6.md).
 proptest = "1.11.0"
 
+[[example]]
+# The TLS example uses the rustls backend, so it is built only with that feature.
+name = "tls"
+required-features = ["rustls"]
+
 [[bin]]
 name = "igs104-client"
 path = "src/bin/igs104_client.rs"
