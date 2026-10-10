@@ -29,5 +29,4 @@ AGENTS.md
 IMPLEMENTATION.md
 opencode.json
 # Text of the IEC standards (licensed): versioned only in a private local repository, never here
-docs/spec/
-docs/ai-log/
+docs/spec
