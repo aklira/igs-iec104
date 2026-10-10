@@ -7,7 +7,8 @@
 //! [`profile`] holds the values that the standard's conformance tables mark as mandatory or
 //! optional. [`events`] names the security events of its Annex A. [`settings`] collects the
 //! identity, the trust anchors and the policy of a connection. A [`TlsBackend`] secures the TCP
-//! connections of a client or a server: the rustls backend is the default feature `rustls`.
+//! connections of a client or a server. The OpenSSL backend is the default, feature `openssl`; the
+//! rustls backend is the feature `rustls`, which does not offer every mandatory item of the profile.
 
 use std::fmt;
 use std::future::Future;
