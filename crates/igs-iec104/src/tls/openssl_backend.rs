@@ -57,9 +57,11 @@ const GROUPS: &str = "P-256:P-384:ffdhe2048:ffdhe3072:ffdhe4096:brainpoolP256r1:
     brainpoolP512r1";
 
 /// The signature algorithms of the profile (tables 5 and 6 of clause 8.3.4; tables 17 and 18 of
-/// clause 10.6.2), and the TLS 1.2 forms of the RSA and ECDSA hashes.
+/// clause 10.6.2). The TLS 1.2 names RSA+SHA256 and ECDSA+SHA256 are the same schemes as
+/// rsa_pkcs1_sha256 and ecdsa_secp256r1_sha256, which TLS 1.2 uses too. OpenSSL 3.0 rejects a list
+/// that names one scheme twice (OpenSSL 3.5 accepts it), so the TLS 1.2 names are not listed.
 const SIGALGS: &str = "rsa_pss_rsae_sha256:rsa_pss_pss_sha256:ecdsa_secp256r1_sha256:\
-    rsa_pkcs1_sha256:RSA+SHA256:ECDSA+SHA256";
+    rsa_pkcs1_sha256";
 
 /// The message of the OpenSSL reason for a client that sent no certificate when one was required.
 const NO_CLIENT_CERTIFICATE: &str = "peer did not return a certificate";
