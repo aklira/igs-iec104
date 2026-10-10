@@ -188,6 +188,105 @@ impl From<ProcedureError> for ClientError {
 /// # Ok(())
 /// # }
 /// ```
+/// # Requests from other tasks
+///
+/// [`Client::next_event`] takes the client by `&mut`, so the events have one owner. The request
+/// methods take `&self`, and other tasks can call them through a shared reference. They cannot read
+/// the events, though: a task that holds a lock on the client while it waits for an event keeps the
+/// other tasks from making their requests. The owner therefore receives the requests of the other
+/// tasks over a channel, makes them with the methods of the client, and judges the answers with
+/// [`crate::answer::judge`]. The example asks for a general interrogation this way.
+///
+/// What the results of the request methods mean:
+///
+/// - `Ok(())` means the request was accepted into the command channel. It is not sent yet, and it is
+///   not confirmed. A request made while the connection is down waits for the next connection.
+/// - The answer arrives as a [`Delivery::Asdu`] event. [`Delivery::Rejected`] reports a command that
+///   was not carried out.
+/// - When the connection ends, the answer to a request of that connection may never arrive.
+///
+/// ```no_run
+/// use igs_iec104::answer::{self, Answer, Request};
+/// use igs_iec104::client::{Client, ClientConfig, Event};
+/// use igs_iec104::Delivery;
+/// use igs_iec104_codec::elements::Qoi;
+/// use igs_iec104_codec::generated::profile::TypeId;
+/// use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
+/// use igs_iec104_link::TransferState;
+/// use tokio::sync::{mpsc, oneshot};
+///
+/// /// The interrogation in progress, and the reply that waits for its termination.
+/// type Running = Option<(oneshot::Sender<bool>, Request<'static>)>;
+///
+/// /// Replies `false` to the interrogation in progress, if any: the connection ended or refused it.
+/// fn refuse(running: &mut Running) {
+///     if let Some((reply, _)) = running.take() {
+///         let _ = reply.send(false);
+///     }
+/// }
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// // Another task sends a reply channel for each general interrogation it asks for. The reply is
+/// // `true` when the station terminates the interrogation, and `false` when it refuses it.
+/// let (asks, mut questions) = mpsc::channel::<oneshot::Sender<bool>>(8);
+/// tokio::spawn(async move {
+///     let (reply, outcome) = oneshot::channel();
+///     if asks.send(reply).await.is_ok() {
+///         println!("the interrogation terminated: {:?}", outcome.await);
+///     }
+/// });
+/// let common_address = CommonAddress::new(1);
+/// let address = InformationObjectAddress::new(0).ok_or("the address is out of range")?;
+/// let mut client = Client::connect(ClientConfig::new("127.0.0.1:2404".parse()?, common_address));
+/// let mut started = false;
+/// let mut running: Running = None;
+/// loop {
+///     tokio::select! {
+///         // One interrogation at a time: no question is taken while one is in progress.
+///         Some(reply) = questions.recv(), if started && running.is_none() => {
+///             let request = Request {
+///                 types: Some(&[TypeId::C_IC_NA_1]),
+///                 common_address,
+///                 address,
+///                 cause: cause::ACTIVATION_TERMINATION,
+///             };
+///             match client.interrogate(Qoi::STATION).await {
+///                 Ok(()) => running = Some((reply, request)),
+///                 Err(_) => {
+///                     let _ = reply.send(false);
+///                 }
+///             }
+///         }
+///         event = client.next_event() => match event {
+///             None => break,
+///             Some(Event::Connected) => client.start_data_transfer().await?,
+///             Some(Event::Delivery(Delivery::Transfer(TransferState::Started))) => started = true,
+///             Some(Event::Disconnected(_)) => {
+///                 started = false;
+///                 refuse(&mut running);
+///             }
+///             Some(Event::Delivery(Delivery::Rejected(_))) => refuse(&mut running),
+///             Some(Event::Delivery(Delivery::Asdu(asdu))) => {
+///                 if let Some((reply, request)) = running.take() {
+///                     match answer::judge(&asdu, &request) {
+///                         Some(Answer::Confirmed) => {
+///                             let _ = reply.send(true);
+///                         }
+///                         Some(Answer::Refused { .. }) => {
+///                             let _ = reply.send(false);
+///                         }
+///                         None => running = Some((reply, request)),
+///                     }
+///                 }
+///             }
+///             Some(_) => {}
+///         },
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct Client {
     commands: mpsc::Sender<Command>,

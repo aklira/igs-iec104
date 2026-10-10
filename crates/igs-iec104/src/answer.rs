@@ -14,7 +14,8 @@
 //!
 //! [`judge`] tells whether an ASDU is the answer to a [`Request`]. A caller that waits for
 //! an answer judges each ASDU it receives until one of them is the answer, as the client
-//! binary does.
+//! binary does. The pattern of a client that serves other tasks is in the documentation of
+//! [`crate::client::Client`].
 
 use igs_iec104_codec::asdu::Asdu;
 use igs_iec104_codec::generated::profile::TypeId;
