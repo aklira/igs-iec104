@@ -23,6 +23,9 @@ use igs_iec104::process_image::PointValue;
 use igs_iec104::server::{Handler, Operation, Refusal, Server, ServerConfig, ServerHandle};
 use igs_iec104::tls::events::{SecurityEvent, SecurityEvents};
 use igs_iec104::tls::openssl_backend::OpensslBackend;
+use igs_iec104::tls::profile::{
+    Support, GROUPS, MANDATORY_SIGNATURE_ALGORITHMS, TLS12_SUITES, TLS13_SUITES,
+};
 use igs_iec104::tls::settings::{Identity, TlsSettings, TrustAnchors};
 use igs_iec104::tls::Secure;
 use igs_iec104::Delivery;
@@ -44,6 +47,8 @@ const CLIENT_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/client.pem");
 const CLIENT_KEY: &[u8] = include_bytes!("fixtures/tls/client.key");
 const RSA_SERVER_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/rsa_server.pem");
 const RSA_SERVER_KEY: &[u8] = include_bytes!("fixtures/tls/rsa_server.key");
+const PSS_SERVER_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/pss_server.pem");
+const PSS_SERVER_KEY: &[u8] = include_bytes!("fixtures/tls/pss_server.key");
 const BIG_SERVER_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/big_server.pem");
 const BIG_SERVER_KEY: &[u8] = include_bytes!("fixtures/tls/big_server.key");
 const EXPIRED_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/expired_client.pem");
@@ -534,4 +539,195 @@ async fn the_mandatory_ffdhe_group_of_tls_13_is_negotiated() {
     .expect("the handshake succeeds with ffdhe2048");
     assert!(name.starts_with("TLS_"), "a TLS 1.3 suite: {name}");
     assert_eq!(version.as_deref(), Some("TLSv1.3"));
+}
+
+/// The station key that an item of the profile needs.
+#[derive(Clone, Copy)]
+enum Key {
+    /// The ECDSA key of the server certificate.
+    Ecdsa,
+    /// The RSA key of the RSA server certificate.
+    Rsa,
+    /// The RSA-PSS key of the PSS server certificate.
+    Pss,
+}
+
+/// The mandatory TLS 1.2 suites (table 9 of clause 10.5.1): the profile name, the OpenSSL name, the
+/// station key and the group that the test offers.
+const TLS12_ITEMS: &[(&str, &str, Key, &str)] = &[
+    (
+        "TLS_RSA_WITH_AES_128_CBC_SHA256",
+        "AES128-SHA256",
+        Key::Rsa,
+        "P-256",
+    ),
+    (
+        "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+        "DHE-RSA-AES128-GCM-SHA256",
+        Key::Rsa,
+        "ffdhe2048",
+    ),
+    (
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+        "ECDHE-RSA-AES128-GCM-SHA256",
+        Key::Rsa,
+        "P-256",
+    ),
+    (
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "ECDHE-ECDSA-AES128-GCM-SHA256",
+        Key::Ecdsa,
+        "P-256",
+    ),
+];
+
+/// The mandatory TLS 1.3 suites (table 13 of clause 10.6.1), by their names, which OpenSSL shares.
+const TLS13_ITEMS: &[&str] = &[
+    "TLS_AES_128_GCM_SHA256",
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_AES_128_CCM_SHA256",
+];
+
+/// The mandatory groups (table 16 of clause 10.6.2): the profile name and the OpenSSL name.
+const GROUP_ITEMS: &[(&str, &str)] = &[("secp256r1", "P-256"), ("ffdhe2048", "ffdhe2048")];
+
+/// The mandatory signature algorithms (tables 17 and 18 of clause 10.6.2): the profile name, the
+/// list the client offers with its own ECDSA scheme (the client certificate is an ECDSA key), and
+/// the station key. The scheme is the only one the station's key can use, so the handshake shows
+/// that the station signs with it.
+const SIGALG_ITEMS: &[(&str, &str, Key)] = &[
+    (
+        "rsa_pss_rsae_sha256",
+        "rsa_pss_rsae_sha256:ecdsa_secp256r1_sha256",
+        Key::Rsa,
+    ),
+    (
+        "rsa_pss_pss_sha256",
+        "rsa_pss_pss_sha256:ecdsa_secp256r1_sha256",
+        Key::Pss,
+    ),
+    (
+        "ecdsa_secp256r1_sha256",
+        "ecdsa_secp256r1_sha256",
+        Key::Ecdsa,
+    ),
+];
+
+/// The mandatory signature algorithms that no test negotiates. rsa_pkcs1_sha256 is mandatory for
+/// certificates (table 18): it needs a chain whose issuer signs with RSA PKCS#1, and the test root
+/// is an ECDSA key. The test checks this list, so that it changes only with the test.
+const NOT_NEGOTIATED: &[&str] = &["rsa_pkcs1_sha256"];
+
+#[tokio::test]
+async fn every_mandatory_item_of_the_profile_is_negotiated() {
+    // Each item is offered alone to a station with the key it needs. The client holds the test
+    // client certificate, which the station requires (clause 6.4.3). An item without a row in the
+    // tables above panics, so a new mandatory item cannot be left out.
+    let events = Arc::new(Recorder::default());
+    let ecdsa = start_station_with(&events, SERVER_CERTIFICATE, SERVER_KEY).await;
+    let rsa = start_station_with(&events, RSA_SERVER_CERTIFICATE, RSA_SERVER_KEY).await;
+    let pss = start_station_with(&events, PSS_SERVER_CERTIFICATE, PSS_SERVER_KEY).await;
+    let station = |key: Key| match key {
+        Key::Ecdsa => ecdsa,
+        Key::Rsa => rsa,
+        Key::Pss => pss,
+    };
+
+    for suite in TLS12_SUITES
+        .iter()
+        .filter(|suite| suite.support == Support::Mandatory)
+    {
+        let Some(&(_, openssl, key, group)) = TLS12_ITEMS.iter().find(|item| item.0 == suite.name)
+        else {
+            panic!("no test for the mandatory TLS 1.2 suite {}", suite.name);
+        };
+        let (name, version) = raw_client(station(key), |builder| {
+            with_client_identity(builder);
+            builder
+                .set_max_proto_version(Some(SslVersion::TLS1_2))
+                .expect("TLS 1.2");
+            builder.set_groups_list(group).expect("the group");
+            builder.set_cipher_list(openssl).expect("the suite");
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{} is not negotiated: {error}", suite.name));
+        assert_eq!(name, suite.name);
+        assert_eq!(version.as_deref(), Some("TLSv1.2"));
+    }
+
+    for suite in TLS13_SUITES
+        .iter()
+        .filter(|suite| suite.support == Support::Mandatory)
+    {
+        assert!(
+            TLS13_ITEMS.contains(&suite.name),
+            "no test for the mandatory TLS 1.3 suite {}",
+            suite.name
+        );
+        let (name, version) = raw_client(ecdsa, |builder| {
+            with_client_identity(builder);
+            builder
+                .set_min_proto_version(Some(SslVersion::TLS1_3))
+                .expect("TLS 1.3");
+            builder.set_ciphersuites(suite.name).expect("the suite");
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{} is not negotiated: {error}", suite.name));
+        assert_eq!(name, suite.name);
+        assert_eq!(version.as_deref(), Some("TLSv1.3"));
+    }
+
+    for group in GROUPS
+        .iter()
+        .filter(|group| group.support == Support::Mandatory)
+    {
+        let Some(&(_, openssl)) = GROUP_ITEMS.iter().find(|item| item.0 == group.name) else {
+            panic!("no test for the mandatory group {}", group.name);
+        };
+        let (_, version) = raw_client(ecdsa, |builder| {
+            with_client_identity(builder);
+            builder
+                .set_min_proto_version(Some(SslVersion::TLS1_3))
+                .expect("TLS 1.3");
+            builder.set_groups_list(openssl).expect("the group");
+        })
+        .await
+        .unwrap_or_else(|error| panic!("the group {} is not negotiated: {error}", group.name));
+        assert_eq!(version.as_deref(), Some("TLSv1.3"));
+    }
+
+    let mut untested = Vec::new();
+    for scheme in MANDATORY_SIGNATURE_ALGORITHMS {
+        if NOT_NEGOTIATED.contains(&scheme.name) {
+            untested.push(scheme.name);
+            continue;
+        }
+        let Some(&(_, offered, key)) = SIGALG_ITEMS.iter().find(|item| item.0 == scheme.name)
+        else {
+            panic!(
+                "no test for the mandatory signature algorithm {}",
+                scheme.name
+            );
+        };
+        let (_, version) = raw_client(station(key), |builder| {
+            with_client_identity(builder);
+            builder
+                .set_min_proto_version(Some(SslVersion::TLS1_3))
+                .expect("TLS 1.3");
+            builder.set_sigalgs_list(offered).expect("the scheme");
+        })
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "the signature algorithm {} is not negotiated: {error}",
+                scheme.name
+            )
+        });
+        assert_eq!(version.as_deref(), Some("TLSv1.3"));
+    }
+    assert_eq!(
+        untested,
+        ["rsa_pkcs1_sha256"],
+        "the untested signature algorithms changed"
+    );
 }

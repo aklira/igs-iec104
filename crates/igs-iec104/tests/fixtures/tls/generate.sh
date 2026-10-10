@@ -5,8 +5,8 @@
 #
 # Generates the TLS test material of the X1 tests into this directory: a test root CA with a
 # bundle of five roots, a server and a client certificate, a client certificate from another CA,
-# an expired client certificate, a revoked client certificate with its CRL, and a server
-# certificate above the 8 192-octet limit of clause 6.4.2. The CA keys stay in a temporary
+# an expired client certificate, a revoked client certificate with its CRL, a server certificate
+# with an RSA-PSS key, and a server certificate above the 8 192-octet limit of clause 6.4.2. The CA keys stay in a temporary
 # directory and are not written here.
 #
 # This is test material only. Never use it outside the tests. Run the script again to regenerate.
@@ -90,6 +90,18 @@ printf "%s\n" "basicConstraints=CA:FALSE" "keyUsage=critical,digitalSignature,ke
 openssl ca -config ca.cnf -batch -notext -in rsa_server.csr -out rsa_server.pem \
     -extfile rsa_server.ext -days 3650 2>/dev/null
 
+# An RSA-PSS server certificate: its key has the RSA-PSS type, which the signature algorithm
+# rsa_pss_pss_sha256 needs (tables 17 and 18 of clause 10.6.2). The key uses SHA-256 and a salt of
+# 32 octets.
+openssl genpkey -algorithm RSA-PSS -pkeyopt rsa_keygen_bits:2048 -pkeyopt rsa_pss_keygen_md:sha256 \
+    -pkeyopt rsa_pss_keygen_mgf1_md:sha256 -pkeyopt rsa_pss_keygen_saltlen:32 \
+    -out pss_server.key 2>/dev/null
+openssl req -new -key pss_server.key -subj "/CN=localhost" -out pss_server.csr
+printf "%s\n" "basicConstraints=CA:FALSE" "keyUsage=critical,digitalSignature" \
+    "extendedKeyUsage=serverAuth" "subjectAltName=DNS:localhost,IP:127.0.0.1" > pss_server.ext
+openssl ca -config ca.cnf -batch -notext -in pss_server.csr -out pss_server.pem \
+    -extfile pss_server.ext -days 3650 2>/dev/null
+
 # A client certificate from a root that the station does not trust.
 root rogue "igs-iec104 rogue root"
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out rogue_client.key 2>/dev/null
@@ -121,11 +133,12 @@ if [ "$size" -le 8192 ]; then
 fi
 
 # The files that the tests read. Each one is checked against the test root before it is copied.
-openssl verify -CAfile roots.pem server.pem client.pem big_server.pem rsa_server.pem >/dev/null
-for name in server client big_server rsa_server revoked_client expired_client rogue_client; do
+openssl verify -CAfile roots.pem server.pem client.pem big_server.pem rsa_server.pem \
+    pss_server.pem >/dev/null
+for name in server client big_server rsa_server pss_server revoked_client expired_client rogue_client; do
     cp "$name.pem" "$here/"
 done
-for name in server client big_server rsa_server rogue_client expired_client revoked_client; do
+for name in server client big_server rsa_server pss_server rogue_client expired_client revoked_client; do
     cp "$name.key" "$here/"
 done
 cp roots.pem crl.pem "$here/"
