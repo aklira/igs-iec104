@@ -13,6 +13,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | F3 Code generation | Done, committed `bd7afd5` | log `docs/ai-log/F3.md` |
 | F5 AI log and questions | Done, committed | `091cf52`, log `docs/ai-log/F5.md` |
 | F4 Interop bench skeleton | Done, committed | log `docs/ai-log/F4.md` |
+| C1 Primitive formats | Done, committed | log `docs/ai-log/C1.md`, decisions D-006 and D-007 in `PROVENANCE.md` |
 
 ## Decisions taken (beyond the plan)
 
@@ -50,6 +51,6 @@ decisions:
   Podman). It pins FledgePower v1.2.4 by digest and starts each peer with
   `bench/peer/bootstrap.sh` (one service per container).
 
-- The generated profile is ready for C1-C4. C1 primitive formats can start
-  (depends on F3 only). `object_size_bits(125) == None` must be handled when
-  C4 decodes.
+- The generated profile is ready for C2-C4. `object_size_bits(125) == None` must
+  be handled when C4 decodes. C2 (information elements) can start now that
+  C1 is done.
