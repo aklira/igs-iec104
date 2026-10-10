@@ -21,7 +21,8 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | C6 Property tests | Done, committed | log `docs/ai-log/C6.md`; `proptest` added as a dev-dependency (approved) |
 | C7 Fuzzing ⛔ | Partly done: harness committed, 10 min per target without crash; 24 h campaign pending (maintainer gate) | log `docs/ai-log/C7.md`; `libfuzzer-sys` and the `NCSA` licence approved |
 | L1 Parameters | Done, committed | log `docs/ai-log/L1.md`, decision D-012 in `PROVENANCE.md` (recommendations are warnings) |
-| L2 State machine core | Done, not committed: both roles follow figures 17 and 18 (figure 18 read from the PDF page 51); window, wrap-around and N(R) checks tested with a fake clock | log `docs/ai-log/L2.md`; open questions Q-003 and Q-005 to Q-008 in `QUESTIONS.md` |
+| L2 State machine core | Done, committed `c543252`: both roles follow figures 17 and 18 (figure 18 read from the PDF page 51); window, wrap-around and N(R) checks tested with a fake clock | log `docs/ai-log/L2.md`; open questions Q-007 and Q-008 in `QUESTIONS.md` |
+| L3 Timers and tests | Done, not committed: t1, t2 and t3 with fake-clock tests; `Session::new` takes the establishment instant and `next_deadline()` replaces a wake-up action | log `docs/ai-log/L3.md`; open questions Q-009 to Q-013 in `QUESTIONS.md` (figures 12 to 14 missing from the prepared text) |
 
 ## Decisions taken (beyond the plan)
 
@@ -67,7 +68,10 @@ decisions:
   targets. The 24-hour campaign is a maintainer gate (see `docs/ai-log/C7.md` for the
   commands).
 - L1 (parameters) is done: `LinkConfig` in `igs-iec104-link`.
-- L2 (state machine core) is done in the working tree, not committed. Its open
-  questions (Q-003, Q-005 to Q-008) need a decision before the L3 timers go in.
+- L2 (state machine core) is committed. Q-003, Q-005 and Q-006 are decided (D-013: the
+  connection closes). Q-007 and Q-008 stay open.
+- L3 (timers) is done in the working tree, not committed. Its questions Q-009 to Q-013
+  rest on figures 12 to 14, which are missing from the prepared text. The figures are
+  for a maintainer to read before the reaction is confirmed.
 - The generated profile is ready. `object_size_bits(125) == None` is handled by
   the `FileSegment` value (length from LOS, see C4).

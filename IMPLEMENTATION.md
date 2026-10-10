@@ -388,7 +388,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | C7 Fuzzing ⛔ | [ ] |
 | L1 Parameters | [x] |
 | L2 State machine core | [x] |
-| L3 Timers and tests | [ ] |
+| L3 Timers and tests | [x] |
 | L4 Interop APCI ⛔ | [ ] |
 | T1 Transport | [ ] |
 | T2 Client API | [ ] |

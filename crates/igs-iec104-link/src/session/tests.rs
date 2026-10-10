@@ -71,17 +71,20 @@ fn send_u(function: UnnumberedFunction) -> Action {
     Action::Send(Apdu::Unnumbered(function))
 }
 
-fn controlled() -> Session {
-    Session::new(LinkConfig::with_defaults(Role::Controlled))
+fn controlled(now: Instant) -> Session {
+    Session::new(LinkConfig::with_defaults(Role::Controlled), now)
 }
 
-fn controlled_with(parameters: Parameters) -> Session {
-    Session::new(LinkConfig::new(Role::Controlled, parameters).expect("valid parameters"))
+fn controlled_with(parameters: Parameters, now: Instant) -> Session {
+    Session::new(
+        LinkConfig::new(Role::Controlled, parameters).expect("valid parameters"),
+        now,
+    )
 }
 
 /// A controlled session whose peer has started the data transfer.
 fn started(base: Instant) -> Session {
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = session.handle(
         Event::Received(unnumbered(UnnumberedFunction::StartDtAct)),
         at(base, 0),
@@ -101,7 +104,8 @@ fn send(session: &mut Session, asdu: Asdu, now: Instant) -> Vec<Action> {
 
 #[test]
 fn a_new_session_is_stopped_with_zero_sequence_numbers() {
-    let session = controlled();
+    let base = Instant::now();
+    let session = controlled(base);
     assert_eq!(session.transfer(), TransferState::Stopped);
     assert_eq!(session.outstanding(), 0);
     assert!(!session.is_closed());
@@ -111,7 +115,7 @@ fn a_new_session_is_stopped_with_zero_sequence_numbers() {
 #[test]
 fn startdt_act_is_confirmed_and_starts_the_transfer() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = receive(
         &mut session,
         unnumbered(UnnumberedFunction::StartDtAct),
@@ -138,7 +142,7 @@ fn startdt_act_in_the_started_state_changes_nothing() {
 fn stopdt_act_in_the_stopped_state_changes_nothing() {
     // Figure 17 has no transition for it: only the U-frame loop of the stopped state.
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = receive(
         &mut session,
         unnumbered(UnnumberedFunction::StopDtAct),
@@ -151,7 +155,7 @@ fn stopdt_act_in_the_stopped_state_changes_nothing() {
 #[test]
 fn an_i_frame_while_stopped_closes_the_connection() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = receive(&mut session, information(0, 0), at(base, 1));
     assert_eq!(actions, vec![Action::Close(CloseReason::UnexpectedIFrame)]);
     assert!(session.is_closed());
@@ -160,7 +164,7 @@ fn an_i_frame_while_stopped_closes_the_connection() {
 #[test]
 fn an_s_frame_while_stopped_closes_the_connection() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = receive(&mut session, supervisory(0), at(base, 1));
     assert_eq!(actions, vec![Action::Close(CloseReason::UnexpectedSFrame)]);
 }
@@ -168,7 +172,7 @@ fn an_s_frame_while_stopped_closes_the_connection() {
 #[test]
 fn test_frames_are_confirmed_in_every_state() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = receive(
         &mut session,
         unnumbered(UnnumberedFunction::TestFrAct),
@@ -516,7 +520,7 @@ fn a_frame_that_cannot_be_decoded_closes_the_connection() {
 #[test]
 fn a_bad_start_octet_closes_the_connection_with_a_framing_error() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = receive(
         &mut session,
         vec![0x69, 0x04, 0x07, 0x00, 0x00, 0x00],
@@ -533,7 +537,7 @@ fn a_bad_start_octet_closes_the_connection_with_a_framing_error() {
 #[test]
 fn a_closed_session_ignores_every_event() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     receive(&mut session, information(0, 0), at(base, 1));
     assert!(session.is_closed());
     assert!(receive(
@@ -549,7 +553,7 @@ fn a_closed_session_ignores_every_event() {
 #[test]
 fn an_asdu_sent_while_stopped_is_returned_to_the_user() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     let actions = send(&mut session, asdu(), at(base, 1));
     assert_eq!(
         actions,
@@ -561,7 +565,7 @@ fn an_asdu_sent_while_stopped_is_returned_to_the_user() {
 #[test]
 fn start_and_stop_requests_are_rejected_on_the_controlled_station() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     assert_eq!(
         session.handle(Event::StartDt, at(base, 1)),
         vec![Action::Rejected(Rejection::NotForRole(Request::StartDt))]
@@ -574,7 +578,7 @@ fn start_and_stop_requests_are_rejected_on_the_controlled_station() {
 
 /// A controlling session whose peer has confirmed STARTDT (figure 18).
 fn controlling_started(base: Instant) -> Session {
-    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling));
+    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     assert_eq!(
         session.handle(Event::StartDt, at(base, 0)),
         vec![send_u(UnnumberedFunction::StartDtAct)]
@@ -592,7 +596,7 @@ fn controlling_started(base: Instant) -> Session {
 #[test]
 fn controlling_start_sends_startdt_act_and_waits_for_the_confirmation() {
     let base = Instant::now();
-    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling));
+    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     assert_eq!(
         session.handle(Event::StartDt, at(base, 1)),
         vec![send_u(UnnumberedFunction::StartDtAct)]
@@ -623,13 +627,13 @@ fn controlling_start_is_refused_unless_stopped() {
 #[test]
 fn an_i_or_s_frame_while_the_start_is_pending_closes_the_connection() {
     let base = Instant::now();
-    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling));
+    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     session.handle(Event::StartDt, at(base, 0));
     assert_eq!(
         receive(&mut session, information(0, 0), at(base, 1)),
         vec![Action::Close(CloseReason::UnexpectedIFrame)]
     );
-    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling));
+    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     session.handle(Event::StartDt, at(base, 0));
     assert_eq!(
         receive(&mut session, supervisory(0), at(base, 1)),
@@ -745,7 +749,7 @@ fn asdus_are_not_sent_while_the_controlling_stop_is_pending() {
 #[test]
 fn controlling_stop_is_refused_unless_started() {
     let base = Instant::now();
-    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling));
+    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     assert_eq!(
         session.handle(Event::StopDt, at(base, 1)),
         vec![Action::Rejected(Rejection::InvalidState {
@@ -758,7 +762,7 @@ fn controlling_stop_is_refused_unless_started() {
 #[test]
 fn a_stopdt_con_while_stopped_changes_nothing_on_the_controlling_station() {
     let base = Instant::now();
-    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling));
+    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     assert!(receive(
         &mut session,
         unnumbered(UnnumberedFunction::StopDtCon),
@@ -769,17 +773,9 @@ fn a_stopdt_con_while_stopped_changes_nothing_on_the_controlling_station() {
 }
 
 #[test]
-fn a_tick_does_nothing_until_the_timers_exist() {
-    let base = Instant::now();
-    let mut session = started(base);
-    assert!(session.handle(Event::Tick, at(base, 100)).is_empty());
-    assert_eq!(session.transfer(), TransferState::Started);
-}
-
-#[test]
 fn the_time_of_the_last_frame_follows_the_clock() {
     let base = Instant::now();
-    let mut session = controlled();
+    let mut session = controlled(base);
     receive(
         &mut session,
         unnumbered(UnnumberedFunction::TestFrAct),
@@ -802,7 +798,7 @@ fn the_window_parameter_is_the_one_of_the_configuration() {
         w: 1,
         ..Parameters::default()
     };
-    let mut session = controlled_with(parameters);
+    let mut session = controlled_with(parameters, base);
     receive(
         &mut session,
         unnumbered(UnnumberedFunction::StartDtAct),
@@ -821,3 +817,5 @@ fn the_window_parameter_is_the_one_of_the_configuration() {
         vec![Action::Rejected(Rejection::WindowFull(asdu()))]
     );
 }
+
+mod timers;

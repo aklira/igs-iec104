@@ -14,8 +14,8 @@
 //! follows figure 18 of §5.3. Where the text says more than the figure, the
 //! text is followed and recorded as a question (Q-008).
 //!
-//! The timers t1, t2 and t3 belong to the next task (L3): a tick does nothing
-//! here.
+//! The timers t1, t2 and t3 are in `timers`. They run on the instants given to
+//! `handle`, and `next_deadline` tells the caller when the next one is due.
 
 use std::time::Instant;
 
@@ -26,6 +26,8 @@ use igs_iec104_codec::asdu::Asdu;
 use igs_iec104_codec::error::DecodeError;
 
 use crate::config::{LinkConfig, Role};
+
+mod timers;
 
 /// The state of the data transfer on the connection (§5.3, figures 17 and 18).
 ///
@@ -68,7 +70,7 @@ pub enum Event {
     StartDt,
     /// The user asks to stop the data transfer.
     StopDt,
-    /// Time passes. The timers of L3 use it; nothing happens yet.
+    /// Time passes: the timers due by now expire. An early tick does nothing.
     Tick,
 }
 
@@ -113,6 +115,9 @@ pub enum CloseReason {
     },
     /// A frame could not be decoded, or the framing failed (QUESTIONS.md Q-006).
     Decode(DecodeError),
+    /// t1 expired while a frame, a start or stop act, or a test act was waiting
+    /// for its confirmation (§5.1, §5.2).
+    T1Expired,
 }
 
 /// What the session asks the caller to do.
@@ -144,6 +149,14 @@ pub struct Session {
     /// The N(R) last sent: every I frame of the peer before it is acknowledged.
     acknowledged_to_peer: SequenceNumber,
     last_received: Option<Instant>,
+    /// t1: when the last frame or act sent expires, unless it is confirmed.
+    t1_deadline: Option<Instant>,
+    /// t2: when the acknowledgement of the received I frames expires.
+    t2_deadline: Option<Instant>,
+    /// t3: when the connection has been idle long enough to be tested.
+    t3_deadline: Option<Instant>,
+    /// True while a TESTFR act waits for its TESTFR con.
+    test_pending: bool,
 }
 
 /// The number of steps from `from` to `to` modulo 32768.
@@ -152,9 +165,10 @@ fn distance(from: SequenceNumber, to: SequenceNumber) -> u16 {
 }
 
 impl Session {
-    /// A session for a connection that has just been established: the sequence
-    /// numbers are zero and the data transfer is stopped (§5.1, §5.3).
-    pub fn new(config: LinkConfig) -> Self {
+    /// A session for a connection established at `now`: the sequence numbers are
+    /// zero, the data transfer is stopped (§5.1, §5.3) and t3 starts (§5.2).
+    pub fn new(config: LinkConfig, now: Instant) -> Self {
+        let t3_deadline = timers::deadline(now, config.parameters().t3);
         Self {
             config,
             decoder: FrameDecoder::new(),
@@ -165,6 +179,10 @@ impl Session {
             acknowledged: SequenceNumber::ZERO,
             acknowledged_to_peer: SequenceNumber::ZERO,
             last_received: None,
+            t1_deadline: None,
+            t2_deadline: None,
+            t3_deadline,
+            test_pending: false,
         }
     }
 
@@ -193,13 +211,20 @@ impl Session {
         if self.closed {
             return Vec::new();
         }
-        match event {
-            Event::Received(bytes) => self.receive(&bytes, now),
-            Event::SendAsdu(asdu) => vec![self.send_asdu(asdu)],
-            Event::StartDt => self.request(Request::StartDt),
-            Event::StopDt => self.request(Request::StopDt),
-            Event::Tick => Vec::new(),
+        let mut actions = Vec::new();
+        self.expire_timers(now, &mut actions);
+        if self.closed {
+            return actions;
         }
+        match event {
+            Event::Received(bytes) => actions.extend(self.receive(&bytes, now)),
+            Event::SendAsdu(asdu) => actions.push(self.send_asdu(asdu, now)),
+            Event::StartDt => actions.extend(self.request(Request::StartDt, now)),
+            Event::StopDt => actions.extend(self.request(Request::StopDt, now)),
+            Event::Tick => {}
+        }
+        self.sync_t1();
+        actions
     }
 
     fn receive(&mut self, bytes: &[u8], now: Instant) -> Vec<Action> {
@@ -214,9 +239,9 @@ impl Session {
                     return actions;
                 }
             };
-            self.last_received = Some(now);
+            self.frame_received(now);
             let outcome = match Apdu::decode(&frame) {
-                Ok(apdu) => self.apply(apdu, &mut actions),
+                Ok(apdu) => self.apply(apdu, now, &mut actions),
                 Err(error) => Err(CloseReason::Decode(error)),
             };
             if let Err(reason) = outcome {
@@ -227,13 +252,18 @@ impl Session {
     }
 
     /// Applies one received frame. An error is the reason to close.
-    fn apply(&mut self, apdu: Apdu, out: &mut Vec<Action>) -> Result<(), CloseReason> {
+    fn apply(
+        &mut self,
+        apdu: Apdu,
+        now: Instant,
+        out: &mut Vec<Action>,
+    ) -> Result<(), CloseReason> {
         match apdu {
             Apdu::Information {
                 send,
                 receive,
                 asdu,
-            } => self.information(send, receive, asdu, out),
+            } => self.information(send, receive, asdu, now, out),
             Apdu::Supervisory { receive } => self.supervisory(receive, out),
             Apdu::Unnumbered(function) => {
                 self.unnumbered(function, out);
@@ -247,6 +277,7 @@ impl Session {
         send: SequenceNumber,
         receive: SequenceNumber,
         asdu: Asdu,
+        now: Instant,
         out: &mut Vec<Action>,
     ) -> Result<(), CloseReason> {
         if !self.accepts_i_frames() {
@@ -271,6 +302,7 @@ impl Session {
             // §5.5: the acknowledgement is due at the latest after w I frames.
             self.send_supervisory(out);
         }
+        self.start_t2_if_unacknowledged(now);
         Ok(())
     }
 
@@ -348,6 +380,12 @@ impl Session {
             )));
             return;
         }
+        // §5.2: a confirmation ends the wait for the test act. Without a wait,
+        // it changes nothing (QUESTIONS.md Q-011).
+        if function == UnnumberedFunction::TestFrCon {
+            self.test_pending = false;
+            return;
+        }
         match (self.config.role(), function, self.transfer) {
             // Figure 17: the controlled station starts and stops.
             (Role::Controlled, UnnumberedFunction::StartDtAct, TransferState::Stopped) => {
@@ -392,7 +430,7 @@ impl Session {
         }
     }
 
-    fn send_asdu(&mut self, asdu: Asdu) -> Action {
+    fn send_asdu(&mut self, asdu: Asdu, now: Instant) -> Action {
         if self.transfer != TransferState::Started {
             return Action::Rejected(Rejection::TransferStopped(asdu));
         }
@@ -405,7 +443,8 @@ impl Session {
             asdu,
         };
         self.send_state = self.send_state.next();
-        self.acknowledged_to_peer = self.receive_state;
+        self.mark_acknowledged_to_peer();
+        self.arm_t1(now);
         Action::Send(frame)
     }
 
@@ -413,12 +452,12 @@ impl Session {
         out.push(Action::Send(Apdu::Supervisory {
             receive: self.receive_state,
         }));
-        self.acknowledged_to_peer = self.receive_state;
+        self.mark_acknowledged_to_peer();
     }
 
     /// The user asks to start or stop the data transfer. Only the controlling
     /// station asks; the controlled station answers the peer's requests.
-    fn request(&mut self, request: Request) -> Vec<Action> {
+    fn request(&mut self, request: Request, now: Instant) -> Vec<Action> {
         match (self.config.role(), request, self.transfer) {
             (Role::Controlled, _, _) => {
                 vec![Action::Rejected(Rejection::NotForRole(request))]
@@ -426,6 +465,7 @@ impl Session {
             // Figure 18: Start connection / send STARTDT act.
             (Role::Controlling, Request::StartDt, TransferState::Stopped) => {
                 self.transfer = TransferState::PendingStarted;
+                self.arm_t1(now);
                 vec![Action::Send(Apdu::Unnumbered(
                     UnnumberedFunction::StartDtAct,
                 ))]
@@ -437,6 +477,7 @@ impl Session {
                 if distance(self.acknowledged_to_peer, self.receive_state) > 0 {
                     self.send_supervisory(&mut actions);
                 }
+                self.arm_t1(now);
                 actions.push(Action::Send(Apdu::Unnumbered(
                     UnnumberedFunction::StopDtAct,
                 )));
