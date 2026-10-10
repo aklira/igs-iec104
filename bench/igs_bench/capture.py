@@ -13,11 +13,11 @@ from .compose import BENCH_DIR, Bench
 CAPTURE_DIR = BENCH_DIR / "captures"
 
 
-def stop(bench: Bench) -> Path:
-    """Stop tcpdump so that the capture file is complete; return its host path."""
-    bench.exec("capture", "pkill", "-INT", "tcpdump", check=False)
+def stop(bench: Bench, service: str = "capture") -> Path:
+    """Stop tcpdump in `service` so that the capture file is complete; return its host path."""
+    bench.exec(service, "pkill", "-INT", "tcpdump", check=False)
     for _ in range(20):
-        if bench.exec("capture", "pgrep", "tcpdump", check=False).returncode != 0:
+        if bench.exec(service, "pgrep", "tcpdump", check=False).returncode != 0:
             break
         time.sleep(0.5)
     return CAPTURE_DIR / bench.capture_name

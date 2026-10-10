@@ -8,6 +8,7 @@ members = [
     "crates/igs-iec104-codec",
     "crates/igs-iec104-link",
     "crates/igs-iec104",
+    "bench/probe",
     "xtask",
 ]
 
