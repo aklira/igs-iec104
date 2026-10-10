@@ -17,8 +17,9 @@
 //!
 //! This is the default backend. Each mandatory item of the profile has a test that negotiates it
 //! (`every_mandatory_item_of_the_profile_is_negotiated`). Not done yet: the key update interval of
-//! clause 8.4, and the check of clause 7.4.5 that the peer renegotiates in time (docs/ai-log/X1.md).
+//! clause 8.4 (docs/ai-log/X1.md).
 
+use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -34,6 +35,7 @@ use openssl::x509::store::{X509Store, X509StoreBuilder};
 use openssl::x509::{CrlStatus, X509Crl, X509StoreContextRef, X509};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+use tokio::time::{sleep_until, Instant as TokioInstant, Sleep};
 use tokio_openssl::SslStream;
 
 use super::openssl_renegotiation;
@@ -66,12 +68,18 @@ const SIGALGS: &str = "rsa_pss_rsae_sha256:rsa_pss_pss_sha256:ecdsa_secp256r1_sh
 /// The message of the OpenSSL reason for a client that sent no certificate when one was required.
 const NO_CLIENT_CERTIFICATE: &str = "peer did not return a certificate";
 
+/// The time that a peer has to answer a renegotiation request (clause 7.4.5). The standard gives
+/// none. The default is t0, the time-out of connection establishment (clause 9.6 of IEC 60870-5-104),
+/// so that a renegotiation is bounded as a connection is (D-015 in PROVENANCE.md).
+const RENEGOTIATION_RESPONSE: Duration = Duration::from_secs(30);
+
 /// The OpenSSL backend: the client and server contexts of one station.
 pub struct OpensslBackend {
     connector: SslConnector,
     server: SslContext,
     events: Arc<dyn SecurityEvents>,
     renegotiation: Option<Duration>,
+    response: Duration,
 }
 
 impl OpensslBackend {
@@ -104,6 +112,7 @@ impl OpensslBackend {
             server: server.build(),
             events,
             renegotiation: settings.renegotiation(),
+            response: RENEGOTIATION_RESPONSE,
         })
     }
 }
@@ -310,7 +319,23 @@ impl OpensslBackend {
         self
     }
 
+    /// Changes the time that a peer has to answer a renegotiation, for the tests.
+    #[cfg(test)]
+    pub(crate) fn with_response(mut self, response: Duration) -> Self {
+        self.response = response;
+        self
+    }
+
     /// Secures an outgoing connection, and returns the stream of the backend.
+    /// The timers of the streams that this backend secures.
+    fn timers(&self) -> Timers {
+        Timers {
+            interval: self.renegotiation,
+            response: self.response,
+            events: Arc::clone(&self.events),
+        }
+    }
+
     pub(crate) async fn connect_stream(
         &self,
         tcp: TcpStream,
@@ -330,7 +355,7 @@ impl OpensslBackend {
             .await
             .map_err(|error| TlsError::Handshake(error.to_string()))?;
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");
-        Ok(OpensslStream::new(stream, self.renegotiation))
+        Ok(OpensslStream::new(stream, self.timers()))
     }
 
     /// Secures an accepted connection, and returns the stream of the backend.
@@ -345,7 +370,7 @@ impl OpensslBackend {
             return Err(TlsError::Handshake(error.to_string()));
         }
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");
-        Ok(OpensslStream::new(stream, self.renegotiation))
+        Ok(OpensslStream::new(stream, self.timers()))
     }
 }
 
@@ -367,52 +392,152 @@ impl TlsBackend for OpensslBackend {
 
 /// A secured stream of the OpenSSL backend. When the renegotiation interval has passed, the next
 /// read or write asks for a renegotiation of the TLS 1.2 session (clause 7.4.5). A TLS 1.3 session
-/// is not renegotiated (clause 8.7), so the interval has no effect on it.
+/// is not renegotiated (clause 8.7), so the interval has no effect on it. A renegotiation that the
+/// peer does not answer in time ends the session, with the alarm TLS_NO_RENEG (D-015).
 pub struct OpensslStream {
     inner: SslStream<TcpStream>,
     interval: Option<Duration>,
+    response: Duration,
+    events: Arc<dyn SecurityEvents>,
     due: Instant,
+    /// The time by which the peer must answer the renegotiation that this side asked for (clause 7.4.5).
+    answer: Option<Instant>,
+    /// Wakes the stream at its next deadline when no read or write does: an idle session is then
+    /// still renegotiated, and a request that the peer does not answer still ends it.
+    timer: Option<Pin<Box<Sleep>>>,
     writing: bool,
 }
 
+/// True when the peer refused a renegotiation with a no_renegotiation alert (RFC 5746): OpenSSL then
+/// ends the read with the error "no renegotiation".
+fn refused_renegotiation(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<openssl::ssl::Error>())
+        .and_then(|error| error.ssl_error())
+        .is_some_and(|stack| {
+            stack
+                .errors()
+                .iter()
+                .any(|error| error.reason() == Some("no renegotiation"))
+        })
+}
+
+/// The timers of a session, and the events that they raise.
+struct Timers {
+    interval: Option<Duration>,
+    response: Duration,
+    events: Arc<dyn SecurityEvents>,
+}
+
 impl OpensslStream {
-    fn new(inner: SslStream<TcpStream>, interval: Option<Duration>) -> Self {
+    fn new(inner: SslStream<TcpStream>, timers: Timers) -> Self {
         let now = Instant::now();
-        let due = interval
+        let due = timers
+            .interval
             .and_then(|interval| now.checked_add(interval))
             .unwrap_or(now);
         Self {
             inner,
-            interval,
+            interval: timers.interval,
+            response: timers.response,
+            events: timers.events,
             due,
+            answer: None,
+            timer: None,
             writing: false,
         }
     }
 
-    /// The number of renegotiations of the session so far, on either side.
+    /// The number of renegotiations that have started on the session, on either side.
     pub fn renegotiations(&self) -> i64 {
         openssl_renegotiation::total(self.inner.ssl())
     }
 
-    /// Asks for a renegotiation when the interval has passed. It waits while a write is in progress,
-    /// because a write that is retried must see the same bytes.
-    fn renegotiate_if_due(&mut self) -> io::Result<()> {
+    /// Runs the timers of the session. A renegotiation is asked for once the interval has passed, and
+    /// none is asked for while another is unanswered. A peer that does not answer in time ends the
+    /// session, and the alarm of a missed renegotiation is raised (clause 7.4.5).
+    fn service(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        if let Some(by) = self.answer {
+            if !openssl_renegotiation::pending(self.inner.ssl()) {
+                self.answer = None;
+                if let Some(interval) = self.interval {
+                    self.due = now.checked_add(interval).unwrap_or(now);
+                }
+            } else if now >= by {
+                self.answer = None;
+                self.events.raise(
+                    SecurityEvent::RenegotiationExpired,
+                    "the peer did not renegotiate in time",
+                );
+                return Err(io::Error::other("the peer did not renegotiate in time"));
+            }
+        }
         let Some(interval) = self.interval else {
             return Ok(());
         };
-        let now = Instant::now();
-        if self.writing || now < self.due {
+        if self.writing || self.answer.is_some() || now < self.due {
             return Ok(());
         }
         self.due = now.checked_add(interval).unwrap_or(now);
         if self.inner.ssl().version2() != Some(SslVersion::TLS1_2) {
             return Ok(());
         }
-        if openssl_renegotiation::request(self.inner.ssl()) {
-            Ok(())
-        } else {
-            Err(io::Error::other("the session refused a renegotiation"))
+        if !openssl_renegotiation::request(self.inner.ssl()) {
+            return Err(io::Error::other("the session refused a renegotiation"));
         }
+        self.answer = Some(now.checked_add(self.response).unwrap_or(now));
+        Ok(())
+    }
+
+    /// Sets the timer to the next deadline: the answer that is awaited, else the next renegotiation.
+    /// It stops while a write is in progress, because the write wakes the stream itself.
+    fn arm(&mut self) {
+        let deadline = if self.writing {
+            None
+        } else if let Some(by) = self.answer {
+            Some(by)
+        } else {
+            self.interval.map(|_| self.due)
+        };
+        let Some(deadline) = deadline else {
+            self.timer = None;
+            return;
+        };
+        let deadline = TokioInstant::from_std(deadline);
+        match self.timer.as_mut() {
+            Some(timer) => timer.as_mut().reset(deadline),
+            None => self.timer = Some(Box::pin(sleep_until(deadline))),
+        }
+    }
+
+    /// Raises the alarm when the peer refused a request of this side with a no_renegotiation alert
+    /// instead of a ClientHello: the request is then unanswered (clause 7.4.5).
+    fn note_refusal(&mut self, error: &io::Error) {
+        if self.answer.is_some() && refused_renegotiation(error) {
+            self.answer = None;
+            self.events.raise(
+                SecurityEvent::RenegotiationExpired,
+                "the peer refused the renegotiation",
+            );
+        }
+    }
+
+    /// Runs the timers, and registers the waker of the next deadline. A deadline that has already
+    /// passed is handled before the read or write goes on.
+    fn poll_timers(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        for _ in 0..2 {
+            self.service()?;
+            self.arm();
+            let Some(timer) = self.timer.as_mut() else {
+                break;
+            };
+            if timer.as_mut().poll(cx).is_pending() {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -423,10 +548,14 @@ impl AsyncRead for OpensslStream {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        if let Err(error) = this.renegotiate_if_due() {
+        if let Err(error) = this.poll_timers(cx) {
             return Poll::Ready(Err(error));
         }
-        Pin::new(&mut this.inner).poll_read(cx, buf)
+        let result = Pin::new(&mut this.inner).poll_read(cx, buf);
+        if let Poll::Ready(Err(error)) = &result {
+            this.note_refusal(error);
+        }
+        result
     }
 }
 
@@ -437,11 +566,14 @@ impl AsyncWrite for OpensslStream {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        if let Err(error) = this.renegotiate_if_due() {
+        if let Err(error) = this.poll_timers(cx) {
             return Poll::Ready(Err(error));
         }
         let result = Pin::new(&mut this.inner).poll_write(cx, buf);
         this.writing = result.is_pending();
+        if let Poll::Ready(Err(error)) = &result {
+            this.note_refusal(error);
+        }
         result
     }
 

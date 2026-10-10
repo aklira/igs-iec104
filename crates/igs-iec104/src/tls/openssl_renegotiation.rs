@@ -6,7 +6,7 @@
 //! (clause 7.4.5; Q-028, approved by the maintainer).
 //!
 //! The `openssl` crate has no wrapper for renegotiation, and the raw session pointer is not public.
-//! This module declares the three OpenSSL functions it needs, and wraps each one in a safe function.
+//! This module declares the OpenSSL functions it needs, and wraps each one in a safe function.
 //! Nothing else in the crate contains unsafe code (`#![deny(unsafe_code)]` in the crate root).
 
 use std::ffi::{c_int, c_long, c_void};
@@ -19,6 +19,9 @@ extern "C" {
     fn SSL_renegotiate(ssl: *mut c_void) -> c_int;
     /// `long SSL_ctrl(SSL *ssl, int cmd, long larg, void *parg)`: the generic control call.
     fn SSL_ctrl(ssl: *mut c_void, cmd: c_int, larg: c_long, parg: *mut c_void) -> c_long;
+    /// `int SSL_renegotiate_pending(const SSL *s)`: 1 from the request of a renegotiation until its
+    /// handshake has finished, 0 otherwise.
+    fn SSL_renegotiate_pending(ssl: *mut c_void) -> c_int;
 }
 
 /// The control code that reports the number of renegotiations: `SSL_CTRL_GET_TOTAL_RENEGOTIATIONS`,
@@ -30,6 +33,13 @@ const SSL_CTRL_GET_TOTAL_RENEGOTIATIONS: c_int = 12;
 /// The reference stays valid for the call, so the pointer does too.
 fn pointer(ssl: &SslRef) -> *mut c_void {
     (ssl as *const SslRef).cast_mut().cast()
+}
+
+/// True while a renegotiation is requested and its handshake has not finished: a request is answered
+/// when this turns false.
+pub fn pending(ssl: &SslRef) -> bool {
+    // SAFETY: the pointer is the session of the reference, valid for the call (see `pointer`).
+    (unsafe { SSL_renegotiate_pending(pointer(ssl)) }) != 0
 }
 
 /// Asks for a renegotiation of the session. The handshake runs inside the next read or write of the

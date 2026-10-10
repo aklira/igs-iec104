@@ -5,14 +5,16 @@
 //! Renegotiation of the OpenSSL backend over loopback (clause 7.4.5): a TLS 1.2 session is
 //! renegotiated once its interval has passed, and a TLS 1.3 session never is (clause 8.7).
 
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use openssl::pkey::PKey;
+use openssl::ssl::{SslConnector, SslMethod, SslOptions};
 use openssl::x509::X509;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use super::*;
 use crate::tls::events::Discard;
@@ -45,14 +47,24 @@ fn backend(
     interval: Option<Duration>,
     tls13: bool,
 ) -> OpensslBackend {
+    backend_with(certificate, key, interval, tls13, Arc::new(Discard))
+}
+
+/// The OpenSSL backend of one station, with its events raised to `events`.
+fn backend_with(
+    certificate: &[u8],
+    key: &[u8],
+    interval: Option<Duration>,
+    tls13: bool,
+    events: Arc<dyn SecurityEvents>,
+) -> OpensslBackend {
     let roots = X509::stack_from_pem(fixture!("roots.pem"))
         .expect("roots")
         .iter()
         .map(|root| root.to_der().expect("DER"))
         .collect();
     let trust = TrustAnchors::new(roots).expect("the roots");
-    let settings =
-        TlsSettings::new(identity(certificate, key), trust, Arc::new(Discard)).with_tls13(tls13);
+    let settings = TlsSettings::new(identity(certificate, key), trust, events).with_tls13(tls13);
     OpensslBackend::new(&settings)
         .expect("the backend")
         .with_renegotiation(interval)
@@ -156,4 +168,168 @@ async fn a_tls_13_session_is_never_renegotiated() {
     assert_eq!(&received, b"ping");
     assert_eq!(client_stream.renegotiations(), 0);
     assert_eq!(server_stream.renegotiations(), 0);
+}
+
+/// Keeps the security events that a session raises.
+#[derive(Default)]
+struct Events(Mutex<Vec<SecurityEvent>>);
+
+impl Events {
+    fn seen(&self) -> Vec<SecurityEvent> {
+        self.0
+            .lock()
+            .map(|events| events.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl SecurityEvents for Events {
+    fn raise(&self, event: SecurityEvent, _detail: &str) {
+        if let Ok(mut events) = self.0.lock() {
+            events.push(event);
+        }
+    }
+}
+
+/// A TLS 1.2 client with the test certificate and the given options.
+async fn peer(tcp: TcpStream, options: SslOptions) -> SslStream<TcpStream> {
+    let mut builder = SslConnector::builder(SslMethod::tls_client()).expect("a connector");
+    let mut store = X509StoreBuilder::new().expect("a store");
+    for root in X509::stack_from_pem(fixture!("roots.pem")).expect("roots") {
+        store.add_cert(root).expect("a root");
+    }
+    builder
+        .set_verify_cert_store(store.build())
+        .expect("the roots");
+    let certificate = X509::from_pem(fixture!("client.pem")).expect("the certificate");
+    builder
+        .set_certificate(&certificate)
+        .expect("the certificate");
+    let key = PKey::private_key_from_pem(fixture!("client.key")).expect("the key");
+    builder.set_private_key(&key).expect("the key");
+    builder
+        .set_max_proto_version(Some(SslVersion::TLS1_2))
+        .expect("TLS 1.2");
+    builder.set_options(options);
+    let ssl = builder
+        .build()
+        .configure()
+        .expect("the configuration")
+        .into_ssl("localhost")
+        .expect("the session");
+    let mut stream = SslStream::new(ssl, tcp).expect("the stream");
+    Pin::new(&mut stream)
+        .connect()
+        .await
+        .expect("the handshake");
+    stream
+}
+
+/// A station that asks for a renegotiation at 50 ms, and gives the peer 200 ms to answer, with the
+/// station's own handshake and its events. The peer is connected with `options`.
+async fn station_with_peer(
+    options: SslOptions,
+) -> (SslStream<TcpStream>, OpensslStream, Arc<Events>) {
+    let events = Arc::new(Events::default());
+    let shared: Arc<dyn SecurityEvents> = events.clone();
+    let station = backend_with(
+        fixture!("server.pem"),
+        fixture!("server.key"),
+        Some(Duration::from_millis(50)),
+        false,
+        shared,
+    )
+    .with_response(Duration::from_millis(200));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("an address");
+    let (accepted, connected) = tokio::join!(listener.accept(), TcpStream::connect(address));
+    let (server_tcp, _) = accepted.expect("accepted");
+    let client_tcp = connected.expect("connected");
+    let (peer, session) =
+        tokio::join!(peer(client_tcp, options), station.accept_stream(server_tcp));
+    (peer, session.expect("the station's handshake"), events)
+}
+
+#[tokio::test]
+async fn a_peer_that_refuses_renegotiation_ends_the_session_with_the_alarm() {
+    let (mut peer, mut session, events) = station_with_peer(SslOptions::NO_RENEGOTIATION).await;
+    // The peer reads, so that it receives the request and refuses it with an alert.
+    tokio::spawn(async move {
+        let mut buffer = [0u8; 64];
+        while let Ok(read) = peer.read(&mut buffer).await {
+            if read == 0 {
+                break;
+            }
+        }
+    });
+
+    let mut buffer = [0u8; 16];
+    let outcome = timeout(Duration::from_secs(10), session.read(&mut buffer))
+        .await
+        .expect("the station ends the session within 10 s");
+    assert!(outcome.is_err(), "the session ends");
+    assert_eq!(
+        events.seen(),
+        vec![
+            SecurityEvent::TlsHandshakeSuccess,
+            SecurityEvent::RenegotiationExpired,
+        ],
+        "the handshake notice, then the alarm of a missed renegotiation"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_that_does_not_answer_a_renegotiation_ends_the_session_with_the_alarm() {
+    // The peer neither reads nor answers: the station's timer alone must end the session.
+    let (_silent, mut session, events) = station_with_peer(SslOptions::empty()).await;
+
+    let mut buffer = [0u8; 16];
+    let outcome = timeout(Duration::from_secs(10), session.read(&mut buffer))
+        .await
+        .expect("the station ends the session within 10 s");
+    assert!(outcome.is_err(), "the session ends");
+    assert_eq!(
+        events.seen(),
+        vec![
+            SecurityEvent::TlsHandshakeSuccess,
+            SecurityEvent::RenegotiationExpired,
+        ],
+        "the handshake notice, then the alarm of a missed renegotiation"
+    );
+}
+
+#[tokio::test]
+async fn an_idle_tls_12_session_is_renegotiated_by_its_timer_alone() {
+    // Nothing is written: the server's read waits, and the interval of its timer wakes it.
+    let interval = Some(Duration::from_millis(50));
+    let client = backend(
+        fixture!("client.pem"),
+        fixture!("client.key"),
+        interval,
+        false,
+    );
+    let server = backend(
+        fixture!("server.pem"),
+        fixture!("server.key"),
+        interval,
+        false,
+    );
+    let (mut client_stream, mut server_stream) = session(&client, &server).await;
+    // The client reads, so that it answers the renegotiation of the server.
+    let reader = tokio::spawn(async move {
+        let mut buffer = [0u8; 64];
+        while let Ok(read) = client_stream.read(&mut buffer).await {
+            if read == 0 {
+                break;
+            }
+        }
+    });
+
+    let mut buffer = [0u8; 16];
+    let _ = timeout(Duration::from_millis(500), server_stream.read(&mut buffer)).await;
+    assert!(
+        server_stream.renegotiations() >= 1,
+        "the idle session was renegotiated"
+    );
+    reader.abort();
 }

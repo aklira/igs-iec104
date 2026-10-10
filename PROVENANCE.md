@@ -183,6 +183,22 @@ substituted time. The API names it `substituted`.
   (the hand-back, and no frame sent after it). The group's part, that it does not resend, is in the
   code and not yet tested by a redundancy test (an endpoint that does not acknowledge is needed).
 
+### D-015 — The time that a peer has to answer a renegotiation
+
+- **Decision**: a renegotiation that this side asked for must be answered within 30 seconds, the
+  default t0. The renegotiation is answered when its handshake has finished. A peer that does not
+  answer in time, or refuses with a no_renegotiation alert, ends the TLS 1.2 session, and the alarm
+  TLS_NO_RENEG is raised.
+- **Sources**: 62351-3 clause 7.4.5 (the called entity terminates the connection when it receives no
+  ClientHello in answer to a HelloRequest; the termination should raise "alarm: session renegotiation
+  interval expired"). The clause gives no time. 104 §9.6 gives the time-out of connection
+  establishment, t0, with the default 30 s.
+- **Confidence**: medium. The standard leaves the time open. A renegotiation is a handshake, so it is
+  bounded as a connection is.
+- **Test**: `openssl_backend::tests::a_peer_that_refuses_renegotiation_ends_the_session_with_the_alarm`,
+  `openssl_backend::tests::a_peer_that_does_not_answer_a_renegotiation_ends_the_session_with_the_alarm`,
+  `openssl_backend::tests::an_idle_tls_12_session_is_renegotiated_by_its_timer_alone`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |
