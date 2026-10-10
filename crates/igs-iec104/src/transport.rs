@@ -85,13 +85,25 @@ where
 /// the stream, or the stream fails, the error says so. In every case the stream
 /// is shut down before returning.
 pub async fn run<S: Transport>(
-    mut stream: S,
+    stream: S,
     config: LinkConfig,
     mut commands: mpsc::Receiver<Command>,
     deliveries: mpsc::Sender<Delivery>,
 ) -> Result<(), TransportError> {
+    run_shared(stream, config, &mut commands, &deliveries).await
+}
+
+/// Like [`run`], with the channels borrowed. A client keeps the same channels
+/// across its connections, so that commands given while a connection is down
+/// wait for the next one.
+pub async fn run_shared<S: Transport>(
+    mut stream: S,
+    config: LinkConfig,
+    commands: &mut mpsc::Receiver<Command>,
+    deliveries: &mpsc::Sender<Delivery>,
+) -> Result<(), TransportError> {
     let mut session = Session::new(config, now());
-    let outcome = drive(&mut stream, &mut session, &mut commands, &deliveries).await;
+    let outcome = drive(&mut stream, &mut session, commands, deliveries).await;
     // Nothing is left to recover when the shutdown fails: the peer is gone.
     let _ = stream.shutdown().await;
     outcome

@@ -401,7 +401,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | L4 Interop APCI ⛔ | [x] |
 | L5 Fault injection interop | [x] |
 | T1 Transport | [x] |
-| T2 Client API | [ ] |
+| T2 Client API | [x] |
 | T3 `igs104-client` binary | [ ] |
 | T4 Client interop matrix ⛔ | [ ] |
 | S1 Process image | [ ] |
