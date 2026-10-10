@@ -10,6 +10,8 @@ use std::io;
 use igs_iec104_codec::error::EncodeError;
 use igs_iec104_link::CloseReason;
 
+use crate::tls::TlsError;
+
 /// Why a connection could not be opened, or ended with an error.
 #[derive(Debug)]
 pub enum TransportError {
@@ -25,6 +27,10 @@ pub enum TransportError {
     Closed(CloseReason),
     /// A frame could not be encoded.
     Encode(EncodeError),
+    /// The TLS handshake did not finish within t0 (task X1).
+    HandshakeTimeout,
+    /// The TLS handshake failed (task X1).
+    Secure(TlsError),
 }
 
 impl fmt::Display for TransportError {
@@ -36,6 +42,8 @@ impl fmt::Display for TransportError {
             Self::PeerClosed => write!(f, "the peer closed the connection"),
             Self::Closed(reason) => write!(f, "the session closed the connection ({reason:?})"),
             Self::Encode(error) => write!(f, "a frame could not be encoded: {error}"),
+            Self::HandshakeTimeout => write!(f, "the TLS handshake did not finish within t0"),
+            Self::Secure(error) => write!(f, "{error}"),
         }
     }
 }
@@ -45,7 +53,10 @@ impl std::error::Error for TransportError {
         match self {
             Self::Connect(error) | Self::Io(error) => Some(error),
             Self::Encode(error) => Some(error),
-            Self::ConnectTimeout | Self::PeerClosed | Self::Closed(_) => None,
+            Self::Secure(error) => Some(error),
+            Self::ConnectTimeout | Self::HandshakeTimeout | Self::PeerClosed | Self::Closed(_) => {
+                None
+            }
         }
     }
 }

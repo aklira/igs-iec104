@@ -27,6 +27,7 @@ use tokio::sync::mpsc;
 use tokio::time::{self, Instant as TokioInstant};
 
 use crate::error::TransportError;
+use crate::tls::{Secure, TlsError};
 
 /// The TCP port of IEC 60870-5-104, confirmed by IANA. The controlled station
 /// listens on it; the controlling station may use any port (§5.4).
@@ -36,6 +37,9 @@ pub const DEFAULT_PORT: u16 = 2404;
 pub trait Transport: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> Transport for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+/// A stream of any kind, plain or secured: the driver runs over it.
+pub type BoxedTransport = Box<dyn Transport>;
 
 /// A request of the application to the connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +74,38 @@ pub enum Delivery {
 /// Opens a TCP connection to `address`, giving up after `t0` (§9.6).
 pub async fn connect(address: SocketAddr, t0: Duration) -> Result<TcpStream, TransportError> {
     within_t0(t0, TcpStream::connect(address)).await
+}
+
+/// Runs the TLS handshake of a client for at most t0 (task X1). `host` is the name the server
+/// certificate must carry.
+pub async fn secure_client(
+    backend: &Secure,
+    tcp: TcpStream,
+    host: &str,
+    t0: Duration,
+) -> Result<BoxedTransport, TransportError> {
+    within_handshake(t0, backend.backend().connect(tcp, host)).await
+}
+
+/// Runs the TLS handshake of an accepted connection for at most t0 (task X1).
+pub async fn secure_server(
+    backend: &Secure,
+    tcp: TcpStream,
+    t0: Duration,
+) -> Result<BoxedTransport, TransportError> {
+    within_handshake(t0, backend.backend().accept(tcp)).await
+}
+
+/// Waits for a handshake for at most t0.
+async fn within_handshake<F>(t0: Duration, handshake: F) -> Result<BoxedTransport, TransportError>
+where
+    F: Future<Output = Result<BoxedTransport, TlsError>>,
+{
+    match time::timeout(t0, handshake).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => Err(TransportError::Secure(error)),
+        Err(_elapsed) => Err(TransportError::HandshakeTimeout),
+    }
 }
 
 /// Waits for `connection` for at most `t0`.
