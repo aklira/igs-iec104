@@ -216,6 +216,47 @@ substituted time. The API names it `substituted`.
   `openssl_backend::tests::a_peer_that_does_not_answer_a_key_update_ends_the_session_with_the_alarm`,
   `settings::tests::the_key_update_interval_defaults_to_six_hours_and_must_not_be_zero`.
 
+### D-017 — A missing or expired CRL is a warning, not a refusal
+
+- **Decision**: when CRLs are configured and none of them is the CRL of the certificate's issuer, the
+  warning NoCrl is raised, and the certificate is accepted without a revocation check. When the CRL of
+  the issuer has expired (its `nextUpdate` has passed), the warning CrlExpired is raised, and the
+  revocation check goes on with that CRL. A revoked certificate is refused as before. With no CRL
+  configured at all, no revocation check is made and no warning is raised.
+- **Sources**: 62351-3 clause 6.4.4.4.2 (the unavailability of a local CRL raises a warning; neither that
+  nor the expiry of a CRL shall terminate the session); clause 6.4.4.4.1 (a revoked certificate is refused).
+- **Confidence**: medium. The clause says "unavailable" and does not say what a station with no CRL at
+  all should report. A warning for every connection of a station that does not check revocation would
+  not say anything useful, so none is raised then.
+- **Test**: `tls_openssl::the_lack_of_a_crl_of_the_issuer_is_a_warning_and_the_client_is_accepted`,
+  `tls_openssl::an_expired_crl_is_a_warning_and_the_client_is_accepted`. Resolves Q-026.
+
+### D-018 — A certificate signed with SHA-1 is refused
+
+- **Decision**: a certificate whose signature uses SHA-1 (sha1WithRSA, or ecdsa-with-SHA1) raises the
+  warning DeprecatedHash, and is refused. This applies to each certificate of the chain.
+- **Sources**: 62351-3 clause 7.4.3 (the detection of SHA-1 raises the warning "deprecated hash algorithm
+  used"; the support of SHA-1 is deprecated and limited to backward compatibility); clause 7.5.4 (the
+  security policies shall be able to disallow optional hashing algorithms).
+- **Confidence**: medium. The clause requires the warning only. Refusing is the policy of the station,
+  which the standard leaves to the operator.
+- **Test**: `tls_openssl::a_certificate_signed_with_sha_1_is_refused_with_the_warning`.
+
+### D-019 — RSA key lengths: the events of clause 7.4.3 read literally
+
+- **Decision**: an RSA key below 2 048 bits is refused, and raises ShortRsaKey (alarm), unless the policy
+  allows 1 024-bit keys and the key has at least 1 024 bits. In that case the warning MinimumKeyLength is
+  raised and the key is accepted. A key below 1 024 bits is refused in any case, and raises ShortKey
+  (alarm) as well as ShortRsaKey. The policy allows 1 024-bit keys only when the settings say so (off by
+  default). Only RSA keys are checked: the standard defines no event for an ECDSA key below 256 bits.
+- **Sources**: 62351-3 clause 7.4.3 (1 024-bit RSA disabled by default; the alarm "insufficient RSA key
+  length (<2 048 bit)" with termination when it is disabled; the warning "minimum key length" when it is
+  enabled; the alarm "insufficient key length" with termination for a key below 1 024 bits).
+- **Confidence**: medium. The first alarm covers every key below 2 048 bits, so a key below 1 024 bits
+  raises it too; the literal reading gives both alarms.
+- **Test**: `tls_openssl::an_rsa_key_of_1024_bits_is_refused_unless_the_policy_allows_it`,
+  `tls_openssl::an_rsa_key_below_1024_bits_is_refused_even_when_the_policy_allows_1024`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

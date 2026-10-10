@@ -106,6 +106,7 @@ pub struct TlsSettings {
     max_certificate_size: usize,
     renegotiation: Option<Duration>,
     key_update: Option<Duration>,
+    rsa_1024: bool,
     events: Arc<dyn SecurityEvents>,
 }
 
@@ -121,6 +122,7 @@ impl TlsSettings {
             max_certificate_size: MIN_CERTIFICATE_SIZE,
             renegotiation: Some(DEFAULT_RENEGOTIATION),
             key_update: Some(DEFAULT_KEY_UPDATE),
+            rsa_1024: false,
             events,
         }
     }
@@ -220,6 +222,18 @@ impl TlsSettings {
     /// The interval of the key update of a TLS 1.3 session, if any.
     pub fn key_update(&self) -> Option<Duration> {
         self.key_update
+    }
+
+    /// Allows RSA keys of 1 024 to 2 047 bits, which are disabled by default (clause 7.4.3).
+    #[must_use]
+    pub fn with_rsa_1024(mut self, allowed: bool) -> Self {
+        self.rsa_1024 = allowed;
+        self
+    }
+
+    /// True when RSA keys of 1 024 to 2 047 bits are allowed (clause 7.4.3).
+    pub fn allows_rsa_1024(&self) -> bool {
+        self.rsa_1024
     }
 
     /// Where the security events go.

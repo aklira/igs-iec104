@@ -58,6 +58,17 @@ const REVOKED_KEY: &[u8] = include_bytes!("fixtures/tls/revoked_client.key");
 const ROGUE_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/rogue_client.pem");
 const ROGUE_KEY: &[u8] = include_bytes!("fixtures/tls/rogue_client.key");
 const CRL: &[u8] = include_bytes!("fixtures/tls/crl.pem");
+const EXPIRED_CRL: &[u8] = include_bytes!("fixtures/tls/expired_crl.pem");
+const RSA_CA: &[u8] = include_bytes!("fixtures/tls/rsa_ca.pem");
+const RSA_CLIENT_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/rsa_client.pem");
+const RSA_CLIENT_KEY: &[u8] = include_bytes!("fixtures/tls/rsa_client.key");
+const TAMPERED_CLIENT_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/tampered_client.pem");
+const SHA1_CLIENT_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/sha1_client.pem");
+const SHA1_CLIENT_KEY: &[u8] = include_bytes!("fixtures/tls/sha1_client.key");
+const RSA1024_CLIENT_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/rsa1024_client.pem");
+const RSA1024_CLIENT_KEY: &[u8] = include_bytes!("fixtures/tls/rsa1024_client.key");
+const RSA512_CLIENT_CERTIFICATE: &[u8] = include_bytes!("fixtures/tls/rsa512_client.pem");
+const RSA512_CLIENT_KEY: &[u8] = include_bytes!("fixtures/tls/rsa512_client.key");
 
 const STATION: u16 = 1;
 
@@ -730,4 +741,264 @@ async fn every_mandatory_item_of_the_profile_is_negotiated() {
         ["rsa_pkcs1_sha256"],
         "the untested signature algorithms changed"
     );
+}
+
+/// The trust anchors of a test: the five roots, and the RSA test root when `with_rsa` is set.
+fn roots(with_rsa: bool) -> Vec<Vec<u8>> {
+    let mut roots = der_list(ROOTS);
+    if with_rsa {
+        roots.extend(der_list(RSA_CA));
+    }
+    roots
+}
+
+/// A station's TLS backend, with its identity, trust anchors, CRLs and the RSA policy of clause 7.4.3.
+fn station_backend(
+    events: &Arc<Recorder>,
+    certificate: &[u8],
+    key: &[u8],
+    roots: Vec<Vec<u8>>,
+    crls: Vec<Vec<u8>>,
+    rsa_1024: bool,
+) -> Secure {
+    let (chain, key) = der_pair(certificate, key);
+    let shared: Arc<dyn SecurityEvents> = events.clone();
+    let identity = Identity::new(chain, key, events.as_ref()).expect("the identity");
+    let trust = TrustAnchors::new(roots).expect("the roots");
+    let settings = TlsSettings::new(identity, trust, shared)
+        .with_revocation(crls)
+        .with_tls13(true)
+        .with_rsa_1024(rsa_1024);
+    Secure::new(OpensslBackend::new(&settings).expect("the backend"))
+}
+
+/// Starts a station with the given backend, and returns its address.
+async fn start_station_on(backend: Secure) -> SocketAddr {
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().expect("an address"),
+        CommonAddress::new(STATION),
+    )
+    .with_tls(backend);
+    let server = Server::bind(config, Refuse).await.expect("binds");
+    let local = server.local_addr().expect("an address");
+    tokio::spawn(server.run());
+    local
+}
+
+/// The configuration of a raw client that presents a certificate and its key, over TLS 1.2. The security
+/// level lets it present a key below the level of OpenSSL's defaults, which the tests of clause 7.4.3 need.
+fn present<'a>(
+    certificate: &'a [u8],
+    key: &'a [u8],
+    security_level: u32,
+) -> impl FnOnce(&mut openssl::ssl::SslConnectorBuilder) + 'a {
+    move |builder| {
+        // TLS 1.2: a TLS 1.3 client finishes before the server checks its certificate (Q-027), so a
+        // refusal would not reach the client.
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_2))
+            .expect("TLS 1.2");
+        builder.set_security_level(security_level);
+        let certificate = X509::from_pem(certificate).expect("the certificate");
+        builder
+            .set_certificate(&certificate)
+            .expect("the certificate");
+        let key = openssl::pkey::PKey::private_key_from_pem(key).expect("the key");
+        builder.set_private_key(&key).expect("the key");
+    }
+}
+
+#[tokio::test]
+async fn a_client_certificate_under_an_rsa_root_is_accepted_with_rsa_pkcs1() {
+    // The chain of the client is signed with RSA PKCS#1 and SHA-256 (rsa_pkcs1_sha256, table 18).
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(true),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    raw_client(station, present(RSA_CLIENT_CERTIFICATE, RSA_CLIENT_KEY, 2))
+        .await
+        .expect("the handshake succeeds");
+    assert!(raised(&events, SecurityEvent::TlsHandshakeSuccess).await);
+}
+
+#[tokio::test]
+async fn the_lack_of_a_crl_of_the_issuer_is_a_warning_and_the_client_is_accepted() {
+    // The station has a CRL, of the test root; the client's issuer is the RSA root, which has none.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(true),
+        vec![crl_der(CRL)],
+        false,
+    ))
+    .await;
+    raw_client(station, present(RSA_CLIENT_CERTIFICATE, RSA_CLIENT_KEY, 2))
+        .await
+        .expect("the handshake succeeds");
+    assert!(raised(&events, SecurityEvent::NoCrl).await);
+}
+
+#[tokio::test]
+async fn an_expired_crl_is_a_warning_and_the_client_is_accepted() {
+    // The CRL of the issuer ended in 2020. Clause 6.4.4.4.2: a warning, and the session goes on.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        vec![crl_der(EXPIRED_CRL)],
+        false,
+    ))
+    .await;
+    raw_client(station, with_client_identity)
+        .await
+        .expect("the handshake succeeds");
+    assert!(raised(&events, SecurityEvent::CrlExpired).await);
+}
+
+#[tokio::test]
+async fn a_certificate_whose_signature_does_not_verify_is_refused_with_the_alarm() {
+    // The certificate of the client, with one bit of its signature changed: it does not verify.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    assert!(
+        raw_client(station, present(TAMPERED_CLIENT_CERTIFICATE, CLIENT_KEY, 2))
+            .await
+            .is_err()
+    );
+    assert!(raised(&events, SecurityEvent::SignatureNotVerified).await);
+}
+
+#[tokio::test]
+async fn a_certificate_signed_with_sha_1_is_refused_with_the_warning() {
+    // Clause 7.4.3: the detection of SHA-1 raises the warning; the policy refuses the certificate (D-018).
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    assert!(raw_client(
+        station,
+        present(SHA1_CLIENT_CERTIFICATE, SHA1_CLIENT_KEY, 0)
+    )
+    .await
+    .is_err());
+    assert!(raised(&events, SecurityEvent::DeprecatedHash).await);
+}
+
+#[tokio::test]
+async fn an_rsa_key_of_1024_bits_is_refused_unless_the_policy_allows_it() {
+    // Clause 7.4.3: with the 1 024-bit keys disabled, a key below 2 048 bits raises the alarm and
+    // is refused.
+    let refusing = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &refusing,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    assert!(raw_client(
+        station,
+        present(RSA1024_CLIENT_CERTIFICATE, RSA1024_CLIENT_KEY, 0)
+    )
+    .await
+    .is_err());
+    assert!(raised(&refusing, SecurityEvent::ShortRsaKey).await);
+
+    // With the policy allowing them, the warning is raised, and the client is accepted.
+    let allowing = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &allowing,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        true,
+    ))
+    .await;
+    raw_client(
+        station,
+        present(RSA1024_CLIENT_CERTIFICATE, RSA1024_CLIENT_KEY, 0),
+    )
+    .await
+    .expect("the handshake succeeds");
+    assert!(raised(&allowing, SecurityEvent::MinimumKeyLength).await);
+}
+
+#[tokio::test]
+async fn an_rsa_key_below_1024_bits_is_refused_even_when_the_policy_allows_1024() {
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        true,
+    ))
+    .await;
+    assert!(raw_client(
+        station,
+        present(RSA512_CLIENT_CERTIFICATE, RSA512_CLIENT_KEY, 0)
+    )
+    .await
+    .is_err());
+    assert!(raised(&events, SecurityEvent::ShortKey).await);
+    assert!(raised(&events, SecurityEvent::ShortRsaKey).await);
+}
+
+#[tokio::test]
+async fn a_peer_with_no_signature_algorithm_in_common_is_refused_with_the_alarm() {
+    // The peer offers only ECDSA with P-384 and SHA-384: the station's keys cannot sign for it.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    let outcome = raw_client(station, |builder| {
+        builder
+            .set_sigalgs_list("ecdsa_secp384r1_sha384")
+            .expect("the scheme");
+    })
+    .await;
+    assert!(outcome.is_err(), "the handshake fails");
+    assert!(raised(&events, SecurityEvent::SignatureAlgorithmNotSupported).await);
+}
+
+/// The DER of the first CRL in a PEM file.
+fn crl_der(pem: &[u8]) -> Vec<u8> {
+    openssl::x509::X509Crl::from_pem(pem)
+        .expect("a CRL")
+        .to_der()
+        .expect("DER")
 }

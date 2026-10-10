@@ -28,12 +28,13 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use openssl::asn1::Asn1Time;
-use openssl::pkey::PKey;
+use openssl::nid::Nid;
+use openssl::pkey::{Id, PKey};
 use openssl::ssl::{
     Ssl, SslConnector, SslContext, SslContextBuilder, SslMethod, SslVerifyMode, SslVersion,
 };
 use openssl::x509::store::{X509Store, X509StoreBuilder};
-use openssl::x509::{CrlStatus, X509Crl, X509StoreContextRef, X509};
+use openssl::x509::{CrlStatus, X509Crl, X509Ref, X509StoreContextRef, X509};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::time::{sleep_until, Instant as TokioInstant, Sleep};
@@ -68,6 +69,13 @@ const SIGALGS: &str = "rsa_pss_rsae_sha256:rsa_pss_pss_sha256:ecdsa_secp256r1_sh
 
 /// The message of the OpenSSL reason for a client that sent no certificate when one was required.
 const NO_CLIENT_CERTIFICATE: &str = "peer did not return a certificate";
+
+/// The OpenSSL messages of a handshake in which no signature algorithm is in common: the TLS 1.2 and
+/// the TLS 1.3 forms (clause 6.4.4.6).
+const NO_COMMON_SIGNATURE: [&str; 2] = [
+    "no shared signature algorithms",
+    "no suitable signature algorithm",
+];
 
 /// The time that a peer has to answer a renegotiation request (clause 7.4.5) or a KeyUpdate (clause 8.4).
 /// The standard gives none. The default is t0, the time-out of connection establishment (clause 9.6 of
@@ -126,12 +134,11 @@ fn judge(settings: &TlsSettings, events: &Arc<dyn SecurityEvents>) -> Result<Jud
         roots: settings.trust().roots().to_vec(),
         crls: parse_crls(settings.revocation())?,
         limit: settings.max_certificate_size(),
+        rsa_1024: settings.allows_rsa_1024(),
         events: Arc::clone(events),
     })
 }
 
-/// Sets the versions, the suites, the groups, the signature algorithms, the identity and the trust
-/// store of one context.
 fn configure(
     context: &mut SslContextBuilder,
     settings: &TlsSettings,
@@ -213,10 +220,19 @@ fn trust_store(roots: &[Vec<u8>]) -> Result<X509Store, TlsError> {
 
 /// The checks of a certificate in the verify callback. Each check that fails raises its event and
 /// refuses the certificate.
+/// The verify result of a signature that does not verify: `X509_V_ERR_CERT_SIGNATURE_FAILURE` in the
+/// installed `x509_vfy.h`.
+const CERT_SIGNATURE_FAILURE: i32 = 7;
+/// The verify results of a key below OpenSSL's security level: `X509_V_ERR_EE_KEY_TOO_SMALL` and
+/// `X509_V_ERR_CA_KEY_TOO_SMALL` in the installed `x509_vfy.h`. The judge applies the policy of clause
+/// 7.4.3 to these keys instead.
+const KEY_TOO_SMALL: [i32; 2] = [66, 67];
+
 struct Judge {
     roots: Vec<Vec<u8>>,
     crls: Vec<X509Crl>,
     limit: usize,
+    rsa_1024: bool,
     events: Arc<dyn SecurityEvents>,
 }
 
@@ -254,6 +270,19 @@ impl Judge {
         {
             return false;
         }
+        if !self.key_and_hash_allowed(certificate) {
+            return false;
+        }
+        let error = context.error().as_raw();
+        // OpenSSL refuses a key below its security level. The policy above has judged that key.
+        let preverified = preverified || KEY_TOO_SMALL.contains(&error);
+        if !preverified && error == CERT_SIGNATURE_FAILURE {
+            self.events.raise(
+                SecurityEvent::SignatureNotVerified,
+                "the certificate signature does not verify",
+            );
+            return false;
+        }
         if !preverified && !self.anchored(context) {
             self.events
                 .raise(SecurityEvent::NoCaMatch, "the chain has no trust anchor");
@@ -262,7 +291,51 @@ impl Judge {
         if !preverified {
             return false;
         }
-        self.not_revoked(&der, context)
+        self.not_revoked(&der, context, &now)
+    }
+
+    /// The key length and the hash of a certificate (clause 7.4.3). An RSA key below 2 048 bits is
+    /// refused, unless the policy allows 1 024 bits and the key has at least 1 024 bits: then the
+    /// warning MinimumKeyLength is raised. A key below 1 024 bits raises ShortKey as well. A
+    /// certificate signed with SHA-1 raises the warning DeprecatedHash and is refused (D-018).
+    fn key_and_hash_allowed(&self, certificate: &X509Ref) -> bool {
+        let Ok(key) = certificate.public_key() else {
+            return false;
+        };
+        if key.id() == Id::RSA {
+            let bits = key.bits();
+            if bits < 2048 && !(self.rsa_1024 && bits >= 1024) {
+                self.events.raise(
+                    SecurityEvent::ShortRsaKey,
+                    &format!("an RSA key of {bits} bits"),
+                );
+                if bits < 1024 {
+                    self.events.raise(
+                        SecurityEvent::ShortKey,
+                        &format!("an RSA key of {bits} bits"),
+                    );
+                }
+                return false;
+            }
+            if bits < 2048 {
+                self.events.raise(
+                    SecurityEvent::MinimumKeyLength,
+                    &format!("an RSA key of {bits} bits"),
+                );
+            }
+        }
+        let algorithm = certificate.signature_algorithm().object().nid();
+        if algorithm == Nid::SHA1WITHRSA
+            || algorithm == Nid::SHA1WITHRSAENCRYPTION
+            || algorithm == Nid::ECDSA_WITH_SHA1
+        {
+            self.events.raise(
+                SecurityEvent::DeprecatedHash,
+                "a certificate signed with SHA-1",
+            );
+            return false;
+        }
+        true
     }
 
     /// True when the top of the chain is one of the trust anchors.
@@ -276,9 +349,10 @@ impl Judge {
         top.to_der().is_ok_and(|der| self.roots.contains(&der))
     }
 
-    /// True when the certificate is not revoked by a CRL of its issuer. A certificate whose issuer
-    /// has no CRL in the list is refused, as the rustls backend refuses it.
-    fn not_revoked(&self, der: &[u8], context: &X509StoreContextRef) -> bool {
+    /// True when the certificate is not revoked by a CRL of its issuer (clause 6.4.4.4). A CRL that has
+    /// expired, or the lack of a CRL of the issuer, is a warning, and the session goes on (clause
+    /// 6.4.4.4.2, D-017).
+    fn not_revoked(&self, der: &[u8], context: &X509StoreContextRef, now: &Asn1Time) -> bool {
         if self.crls.is_empty() {
             return true;
         }
@@ -296,20 +370,32 @@ impl Judge {
         let Ok(key) = issuer.public_key() else {
             return false;
         };
-        for crl in &self.crls {
-            if !matches!(crl.verify(&key), Ok(true)) {
-                continue;
-            }
-            return match crl.get_by_cert(&certificate) {
-                CrlStatus::Revoked(_) => {
-                    self.events.raise(SecurityEvent::CertificateRevoked, "");
-                    self.events.raise(SecurityEvent::RevokedSessionClosed, "");
-                    false
-                }
-                CrlStatus::NotRevoked | CrlStatus::RemoveFromCrl(_) => true,
-            };
+        let Some(crl) = self
+            .crls
+            .iter()
+            .find(|crl| matches!(crl.verify(&key), Ok(true)))
+        else {
+            self.events
+                .raise(SecurityEvent::NoCrl, "no CRL of the issuer is configured");
+            return true;
+        };
+        if crl
+            .next_update()
+            .is_some_and(|next| next.compare(now).map_or(true, |o| o.is_lt()))
+        {
+            self.events.raise(
+                SecurityEvent::CrlExpired,
+                "the CRL of the issuer has expired",
+            );
         }
-        false
+        match crl.get_by_cert(&certificate) {
+            CrlStatus::Revoked(_) => {
+                self.events.raise(SecurityEvent::CertificateRevoked, "");
+                self.events.raise(SecurityEvent::RevokedSessionClosed, "");
+                false
+            }
+            CrlStatus::NotRevoked | CrlStatus::RemoveFromCrl(_) => true,
+        }
     }
 }
 
@@ -347,6 +433,24 @@ impl OpensslBackend {
         }
     }
 
+    /// Raises the alarms of a failed handshake that OpenSSL reports by its message: the peer sent no
+    /// certificate (clause 6.4.3), or no signature algorithm is in common (clause 6.4.4.6).
+    fn raise_handshake_failure(&self, error: &openssl::ssl::Error) {
+        let message = error.to_string();
+        if message.contains(NO_CLIENT_CERTIFICATE) {
+            self.events.raise(SecurityEvent::NoPeerCertificate, "");
+        }
+        if NO_COMMON_SIGNATURE
+            .iter()
+            .any(|reason| message.contains(reason))
+        {
+            self.events.raise(
+                SecurityEvent::SignatureAlgorithmNotSupported,
+                "no signature algorithm in common",
+            );
+        }
+    }
+
     pub(crate) async fn connect_stream(
         &self,
         tcp: TcpStream,
@@ -361,10 +465,10 @@ impl OpensslBackend {
             .map_err(|error| TlsError::Invalid(error.to_string()))?;
         let mut stream =
             SslStream::new(ssl, tcp).map_err(|error| TlsError::Invalid(error.to_string()))?;
-        Pin::new(&mut stream)
-            .connect()
-            .await
-            .map_err(|error| TlsError::Handshake(error.to_string()))?;
+        if let Err(error) = Pin::new(&mut stream).connect().await {
+            self.raise_handshake_failure(&error);
+            return Err(TlsError::Handshake(error.to_string()));
+        }
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");
         Ok(OpensslStream::new(stream, self.timers()))
     }
@@ -375,9 +479,7 @@ impl OpensslBackend {
         let mut stream =
             SslStream::new(ssl, tcp).map_err(|error| TlsError::Invalid(error.to_string()))?;
         if let Err(error) = Pin::new(&mut stream).accept().await {
-            if error.to_string().contains(NO_CLIENT_CERTIFICATE) {
-                self.events.raise(SecurityEvent::NoPeerCertificate, "");
-            }
+            self.raise_handshake_failure(&error);
             return Err(TlsError::Handshake(error.to_string()));
         }
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");

@@ -132,14 +132,61 @@ if [ "$size" -le 8192 ]; then
     exit 1
 fi
 
+# A client certificate from an RSA test root, which is not in roots.pem. Its signature is RSA PKCS#1
+# with SHA-256, which is rsa_pkcs1_sha256 of table 18. The tests trust this root in addition.
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -keyout rsa_ca.key -out rsa_ca.pem -days 3650 \
+    -subj "/CN=igs-iec104 test RSA root" -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out rsa_client.key 2>/dev/null
+openssl req -new -key rsa_client.key -subj "/CN=rsa-client" -out rsa_client.csr
+printf '%s\n' "basicConstraints=CA:FALSE" "keyUsage=critical,digitalSignature" \
+    "extendedKeyUsage=clientAuth" > rsa_client.ext
+openssl x509 -req -in rsa_client.csr -CA rsa_ca.pem -CAkey rsa_ca.key -CAcreateserial -days 3650 \
+    -extfile rsa_client.ext -out rsa_client.pem 2>/dev/null
+
+# The client certificate with one bit of its signature changed. Its issuer and its key identifiers
+# still match test root 1, so OpenSSL checks the signature, which does not verify (clause 6.4.4.6).
+openssl x509 -in client.pem -outform DER -out tampered_client.der
+tampered_size="$(wc -c < tampered_client.der)"
+last="$(od -An -tx1 -j $((tampered_size - 1)) -N1 tampered_client.der | tr -d ' ')"
+if [ "$last" = "00" ]; then flipped=ff; else flipped=00; fi
+printf "\\x$flipped" | dd of=tampered_client.der bs=1 seek=$((tampered_size - 1)) count=1 conv=notrunc 2>/dev/null
+openssl x509 -inform DER -in tampered_client.der -out tampered_client.pem
+cp client.key tampered_client.key
+
+# A client certificate signed with SHA-1: a deprecated hash (clause 7.4.3).
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out sha1_client.key 2>/dev/null
+openssl req -new -key sha1_client.key -subj "/CN=sha1-client" -out sha1_client.csr
+cp rsa_client.ext sha1_client.ext
+openssl x509 -req -in sha1_client.csr -CA root.pem -CAkey root.key -CAcreateserial -sha1 -days 3650 \
+    -extfile sha1_client.ext -out sha1_client.pem 2>/dev/null
+
+# Client certificates with RSA keys of 512 and of 1024 bits, below the 2 048 bits of clause 7.4.3.
+for bits in 512 1024; do
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:$bits -out rsa${bits}_client.key 2>/dev/null
+    openssl req -new -key rsa${bits}_client.key -subj "/CN=rsa${bits}-client" -out rsa${bits}_client.csr
+    cp rsa_client.ext rsa${bits}_client.ext
+    openssl x509 -req -in rsa${bits}_client.csr -CA root.pem -CAkey root.key -CAcreateserial -days 3650 \
+        -extfile rsa${bits}_client.ext -out rsa${bits}_client.pem 2>/dev/null
+done
+
+# A CRL of test root 1 whose validity ended in 2020: a warning, not a termination (clause 6.4.4.4.2).
+openssl ca -config ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20200102000000Z \
+    -out expired_crl.pem 2>/dev/null
+
 # The files that the tests read. Each one is checked against the test root before it is copied.
 openssl verify -CAfile roots.pem server.pem client.pem big_server.pem rsa_server.pem \
-    pss_server.pem >/dev/null
-for name in server client big_server rsa_server pss_server revoked_client expired_client rogue_client; do
+    pss_server.pem sha1_client.pem >/dev/null
+openssl verify -CAfile rsa_ca.pem rsa_client.pem >/dev/null
+openssl verify -auth_level 0 -CAfile roots.pem rsa512_client.pem rsa1024_client.pem >/dev/null
+for name in server client big_server rsa_server pss_server revoked_client expired_client rogue_client \
+    rsa_client tampered_client sha1_client rsa512_client rsa1024_client; do
     cp "$name.pem" "$here/"
 done
-for name in server client big_server rsa_server pss_server rogue_client expired_client revoked_client; do
+cp rsa_ca.pem "$here/"
+for name in server client big_server rsa_server pss_server rogue_client expired_client revoked_client \
+    rsa_client tampered_client sha1_client rsa512_client rsa1024_client; do
     cp "$name.key" "$here/"
 done
-cp roots.pem crl.pem "$here/"
+cp roots.pem crl.pem expired_crl.pem "$here/"
 echo "wrote the TLS test material to $here (big_server.pem: $size octets)"
