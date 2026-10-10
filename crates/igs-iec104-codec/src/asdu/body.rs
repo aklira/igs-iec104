@@ -88,6 +88,24 @@ macro_rules! asdu_bodies {
                     }),
                 }
             }
+
+            /// Strategy of the bodies of one type, for the property tests. The
+            /// sequence form is only generated when `sequence` is true.
+            #[cfg(test)]
+            pub(crate) fn arbitrary(
+                type_id: TypeId,
+                sequence: bool,
+            ) -> proptest::strategy::BoxedStrategy<Self> {
+                use proptest::strategy::Strategy;
+                match type_id {
+                    $(
+                        TypeId::$type_id => crate::proptests::objects::<$value>(sequence)
+                            .prop_map(Self::$type_id)
+                            .boxed(),
+                    )*
+                    _ => unreachable!("{type_id:?} is not in the profile"),
+                }
+            }
         }
     };
 }

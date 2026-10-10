@@ -18,3 +18,6 @@ indexing_slicing = "deny"
 arithmetic_side_effects = "deny"
 
 [dependencies]
+
+[dev-dependencies]
+proptest = "1.11.0"

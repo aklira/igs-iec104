@@ -37,3 +37,7 @@ pub mod asdu;
 
 /// APCI and framing: the I, S and U formats and the frame decoder.
 pub mod apci;
+
+/// Property tests of the codec (task C6).
+#[cfg(test)]
+mod proptests;
