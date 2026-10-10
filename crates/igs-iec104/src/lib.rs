@@ -22,6 +22,7 @@
 pub mod client;
 pub mod error;
 pub mod procedures;
+pub mod process_image;
 pub mod transport;
 
 pub use client::{Client, ClientConfig, ClientError, Event, ReconnectPolicy};

@@ -207,6 +207,7 @@ dependencies = [
  "clap",
  "igs-iec104-codec",
  "igs-iec104-link",
+ "proptest",
  "tokio",
 ]
 

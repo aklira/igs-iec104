@@ -29,6 +29,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | T2 Client API | Done, committed `0056c04`: `Client` with reconnect policy, the procedures of §7 and an event stream; nine integration tests on loopback | log `docs/ai-log/T2.md`; tests `crates/igs-iec104/tests/client.rs` |
 | T3 `igs104-client` binary | Done, committed `c1bbba0`: clap CLI with eleven subcommands. Its manual check was wrong for negative confirmations; corrected in T4 | log `docs/ai-log/T3.md` (correction section); date and judgement unit tests in the binary |
 | T4 Client interop matrix ⛔ | Done, gate closed by the maintainer (option 1: the matrix is the exit of phase 3, known gaps recorded). 33 rows on the reference server; 5 are positive exchanges, 27 check the peer's refusal. Found and fixed the negative-confirmation defect in T3 | log `docs/ai-log/T4.md`; bench tests `bench/tests/test_t4_client_matrix.py` |
+| S1 Process image | Done, not committed: `ProcessImage` in `igs-iec104` with ten monitoring types (time-tagged forms where they exist), change detection on value and quality, a bounded spontaneous queue with drop-oldest and a drop counter; unit and model-based property tests | log `docs/ai-log/S1.md`; tests in `crates/igs-iec104/src/process_image/tests.rs` |
 
 ## Decisions taken (beyond the plan)
 
