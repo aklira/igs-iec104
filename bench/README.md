@@ -63,7 +63,9 @@ The first run pulls the images (about 600 MB).
 | `peer/` | Fledge bootstrap and the service definitions of the peers |
 | `igs_bench/compose.py` | compose engine selection, up/down/exec, readiness wait |
 | `igs_bench/capture.py` | stops tcpdump and returns the capture path |
-| `igs_bench/tshark.py` | `tshark -T json` decoding, error check, frame matching |
+| `igs_bench/tshark.py` | `tshark -T json` decoding per APDU, error check, frame matching |
+| `igs_bench/probe.py` | builds the L4 probe (static musl binary) into `bin/` |
+| `probe/` | the L4 probe: a Rust program that runs igs-iec104 scenarios (not published) |
 | `tests/` | scenarios, one pytest file per task |
 
 ## Scenarios
@@ -71,3 +73,11 @@ The first run pulls the images (about 600 MB).
 | File | Task | What it checks |
 | --- | --- | --- |
 | `tests/test_f4_reference_gi.py` | F4 | the reference client starts data transfer on the reference server and runs a general interrogation (activation, confirmation, termination); the capture has no malformed frame and no error-level expert info |
+| `tests/test_l4_interop.py` | L4 | igs-iec104 against both reference peers: STARTDT, interrogation and STOPDT; TESTFR in both directions; the window of k; the acknowledgement after w and within t2. The probe's capture is checked frame by frame |
+
+L4 scenarios need the static probe: `probe.build()` runs
+`cargo build --release --target x86_64-unknown-linux-musl` (add the target with
+`rustup target add x86_64-unknown-linux-musl` first). The wrap of N(S) at 32768 is
+an expected failure: the reference client closes the connection after about 60 s
+(see `docs/ai-log/L4.md`). Fault injection (dropped and delayed frames) is not in
+the bench yet.

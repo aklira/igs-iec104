@@ -122,6 +122,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "igs-iec104-probe"
+version = "0.1.0"
+dependencies = [
+ "igs-iec104",
+ "igs-iec104-codec",
+ "igs-iec104-link",
+ "tokio",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

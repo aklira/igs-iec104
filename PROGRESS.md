@@ -24,6 +24,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | L2 State machine core | Done, committed `c543252`: both roles follow figures 17 and 18 (figure 18 read from the PDF page 51); window, wrap-around and N(R) checks tested with a fake clock | log `docs/ai-log/L2.md`; open questions Q-007 and Q-008 in `QUESTIONS.md` |
 | L3 Timers and tests | Done, not committed: t1, t2 and t3 with fake-clock tests; `Session::new` takes the establishment instant and `next_deadline()` replaces a wake-up action | log `docs/ai-log/L3.md`; open questions Q-009 to Q-013 in `QUESTIONS.md` (figures 12 to 14 missing from the prepared text) |
 | T1 Transport | Done, not committed: async driver over `tokio::net::TcpStream` with t0 connect timeout, clean shutdown and typed errors; generic `Transport` bound for TLS; `Delivery::Transfer` reports the state of the data transfer | log `docs/ai-log/T1.md`; tests: 12 in `igs-iec104` (in memory on a paused clock, and TCP loopback) |
+| L4 Interop APCI ⛔ | Partly done, committed (box not ticked): probe (`bench/probe`) and 8 scenarios pass in both directions (bench run: 9 passed, incl. F4, and 1 expected failure); wrap of N(S) is a known gap (xfail); fault injection and the wrap in direction 1 are not written; the scenario list awaits the maintainer's review | log `docs/ai-log/L4.md`; bench tests `tests/test_l4_interop.py` |
 
 ## Decisions taken (beyond the plan)
 

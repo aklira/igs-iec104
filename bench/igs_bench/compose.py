@@ -31,10 +31,10 @@ def _engine() -> list[str]:
 class Bench:
     """One running instance of bench/docker-compose.yml."""
 
-    def __init__(self, capture_name: str) -> None:
+    def __init__(self, capture_name: str, env: dict[str, str] | None = None) -> None:
         self.capture_name = capture_name
         self._cmd = [*_engine(), "-p", PROJECT, "-f", str(BENCH_DIR / "docker-compose.yml")]
-        self._env = {**os.environ, "BENCH_CAPTURE": capture_name}
+        self._env = {**os.environ, "BENCH_CAPTURE": capture_name, **(env or {})}
 
     def run(self, *args: str, timeout: float = 120, check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -55,6 +55,17 @@ class Bench:
 
     def exec(self, service: str, *args: str, timeout: float = 60, check: bool = True) -> subprocess.CompletedProcess[str]:
         return self.run("exec", "-T", service, *args, timeout=timeout, check=check)
+
+    def exec_async(self, service: str, *args: str) -> subprocess.Popen[str]:
+        """Start a command in a service without waiting; the caller reads its output."""
+        return subprocess.Popen(
+            [*self._cmd, "exec", "-T", service, *args],
+            cwd=BENCH_DIR,
+            env=self._env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
 
     def wait_ready(self, service: str, timeout: float = 240) -> None:
         """Wait for the peer bootstrap to report its Fledge service running."""

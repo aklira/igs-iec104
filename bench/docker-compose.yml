@@ -29,7 +29,8 @@ services:
 
   ref-client:
     <<: *fledgepower
-    command: ["/bench/peer/client.json"]
+    # BENCH_CLIENT_CONFIG selects the peer the client connects to (L4 uses the probe).
+    command: ["${BENCH_CLIENT_CONFIG:-/bench/peer/client.json}"]
     networks:
       bench:
         ipv4_address: 172.31.104.21
@@ -54,6 +55,29 @@ services:
       - tcpdump -i any -U -Z root -w "/captures/$$BENCH_CAPTURE" tcp port 2404 & exec sleep infinity
     volumes:
       - ./captures:/captures
+
+  # Runs the L4 scenarios inside the bench network (see bench/probe). tcpdump
+  # writes every packet the probe exchanges to captures/$BENCH_CAPTURE, as the
+  # capture service does for the reference server.
+  probe:
+    image: docker.io/nicolaka/netshoot@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
+    networks:
+      bench:
+        ipv4_address: 172.31.104.30
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      BENCH_CAPTURE: ${BENCH_CAPTURE:-bench.pcap}
+    command:
+      - sh
+      - -c
+      # --immediate-mode: libpcap otherwise holds packets back, and a short scenario
+      # stops tcpdump before it has written any.
+      - tcpdump -i any -U --immediate-mode -Z root -w "/captures/$$BENCH_CAPTURE" tcp port 2404 & exec sleep infinity
+    volumes:
+      - ./captures:/captures
+      - ./bin:/bench/bin:ro
 
 networks:
   bench:

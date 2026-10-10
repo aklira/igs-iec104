@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "igs-iec104-probe"
+version = "0.1.0"
+description = "Interop bench probe: runs igs-iec104 scenarios against reference peers. Not published."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+
+[dependencies]
+igs-iec104 = { path = "../../crates/igs-iec104", version = "0.1.0" }
+igs-iec104-codec = { path = "../../crates/igs-iec104-codec", version = "0.1.0" }
+igs-iec104-link = { path = "../../crates/igs-iec104-link", version = "0.1.0" }
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
