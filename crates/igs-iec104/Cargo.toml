@@ -20,6 +20,7 @@ arithmetic_side_effects = "deny"
 [dependencies]
 igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
 igs-iec104-link = { path = "../igs-iec104-link", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
