@@ -275,6 +275,9 @@ impl SecurityEvent {
 
 /// Receives the security events that a connection raises. The application decides where they go:
 /// a log, a monitor, or a test recorder.
+///
+/// The OpenSSL backend raises some events from OpenSSL's message callback, which runs inside a C call:
+/// `raise` must not panic there (a panic cannot cross that call). It should only record the event.
 pub trait SecurityEvents: Send + Sync {
     /// Records one event, with a short detail (for example the certificate subject).
     fn raise(&self, event: SecurityEvent, detail: &str);

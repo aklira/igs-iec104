@@ -19,6 +19,7 @@ use tokio::net::TcpStream;
 
 use crate::transport::BoxedTransport;
 
+pub mod client_hello;
 pub mod events;
 pub mod profile;
 pub mod settings;

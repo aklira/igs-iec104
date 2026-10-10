@@ -40,7 +40,7 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep_until, Instant as TokioInstant, Sleep};
 use tokio_openssl::SslStream;
 
-use super::openssl_session::{self, KeyUpdates};
+use super::openssl_session::{self, Observed};
 
 use super::events::{SecurityEvent, SecurityEvents};
 use super::settings::TlsSettings;
@@ -218,8 +218,6 @@ fn trust_store(roots: &[Vec<u8>]) -> Result<X509Store, TlsError> {
     Ok(builder.build())
 }
 
-/// The checks of a certificate in the verify callback. Each check that fails raises its event and
-/// refuses the certificate.
 /// The verify result of a signature that does not verify: `X509_V_ERR_CERT_SIGNATURE_FAILURE` in the
 /// installed `x509_vfy.h`.
 const CERT_SIGNATURE_FAILURE: i32 = 7;
@@ -463,6 +461,9 @@ impl OpensslBackend {
         let ssl: Ssl = configuration
             .into_ssl(host)
             .map_err(|error| TlsError::Invalid(error.to_string()))?;
+        // The observation is declared before the stream, so that the session is freed first.
+        let observed = Arc::new(Observed::new(None));
+        openssl_session::observe(&ssl, &observed);
         let mut stream =
             SslStream::new(ssl, tcp).map_err(|error| TlsError::Invalid(error.to_string()))?;
         if let Err(error) = Pin::new(&mut stream).connect().await {
@@ -470,20 +471,37 @@ impl OpensslBackend {
             return Err(TlsError::Handshake(error.to_string()));
         }
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");
-        Ok(OpensslStream::new(stream, self.timers()))
+        Ok(OpensslStream::new(stream, observed, self.timers()))
     }
 
     /// Secures an accepted connection, and returns the stream of the backend.
     pub(crate) async fn accept_stream(&self, tcp: TcpStream) -> Result<OpensslStream, TlsError> {
         let ssl = Ssl::new(&self.server).map_err(|error| TlsError::Invalid(error.to_string()))?;
+        // The station observes the ClientHello of the peer from the first message on, so the
+        // observation is installed before the handshake. It is declared before the stream, so that the
+        // session is freed first.
+        let observed = Arc::new(Observed::new(Some(Arc::clone(&self.events))));
+        openssl_session::observe(&ssl, &observed);
         let mut stream =
             SslStream::new(ssl, tcp).map_err(|error| TlsError::Invalid(error.to_string()))?;
         if let Err(error) = Pin::new(&mut stream).accept().await {
             self.raise_handshake_failure(&error);
             return Err(TlsError::Handshake(error.to_string()));
         }
+        // Clauses 7.5.7 and 8.3: these sessions are terminated. The events were raised as the ClientHello
+        // arrived.
+        if observed.mac_then_encrypt() {
+            return Err(TlsError::Handshake(
+                "the peer offered a CBC suite without encrypt-then-MAC".into(),
+            ));
+        }
+        if observed.psk_ke_only() {
+            return Err(TlsError::Handshake(
+                "the peer offered psk_ke as the only key exchange mode".into(),
+            ));
+        }
         self.events.raise(SecurityEvent::TlsHandshakeSuccess, "");
-        Ok(OpensslStream::new(stream, self.timers()))
+        Ok(OpensslStream::new(stream, observed, self.timers()))
     }
 }
 
@@ -509,9 +527,9 @@ impl TlsBackend for OpensslBackend {
 /// peer does not answer in time ends the session, with the alarm TLS_NO_RENEG (D-015).
 pub struct OpensslStream {
     inner: SslStream<TcpStream>,
-    /// The KeyUpdate messages of the session, counted by its message callback. It is declared after
-    /// the session, so that the session is freed before the counters.
-    key_updates: Arc<KeyUpdates>,
+    /// The messages that the session observes (see `Observed`). It is declared after the session, so
+    /// that the session is freed before the observation.
+    observed: Arc<Observed>,
     interval: Option<Duration>,
     key_interval: Option<Duration>,
     response: Duration,
@@ -563,7 +581,7 @@ struct Timers {
 }
 
 impl OpensslStream {
-    fn new(inner: SslStream<TcpStream>, timers: Timers) -> Self {
+    fn new(inner: SslStream<TcpStream>, observed: Arc<Observed>, timers: Timers) -> Self {
         let now = Instant::now();
         // The renegotiation applies to TLS 1.2 sessions, and the key update to TLS 1.3 sessions.
         let version = inner.ssl().version2();
@@ -574,8 +592,6 @@ impl OpensslStream {
         } else {
             (None, None)
         };
-        let key_updates = Arc::new(KeyUpdates::default());
-        openssl_session::observe_key_updates(inner.ssl(), &key_updates);
         let due = interval
             .and_then(|interval| now.checked_add(interval))
             .unwrap_or(now);
@@ -584,7 +600,7 @@ impl OpensslStream {
             .unwrap_or(now);
         Self {
             inner,
-            key_updates,
+            observed,
             interval,
             key_interval,
             response: timers.response,
@@ -606,8 +622,8 @@ impl OpensslStream {
 
     /// The KeyUpdate messages of the session: the ones written, the answers received, and the requests
     /// of the peer.
-    pub fn key_updates(&self) -> &KeyUpdates {
-        &self.key_updates
+    pub fn key_updates(&self) -> &Observed {
+        &self.observed
     }
 
     /// Runs the renegotiation timer of a TLS 1.2 session. A renegotiation is asked for once the interval
@@ -654,7 +670,7 @@ impl OpensslStream {
         };
         let now = Instant::now();
         if let Some(request) = self.key_request {
-            if self.key_updates.answered() > request.answered {
+            if self.observed.answered() > request.answered {
                 self.key_request = None;
                 self.key_due = now.checked_add(interval).unwrap_or(now);
                 return Ok(());
@@ -681,8 +697,8 @@ impl OpensslStream {
                 return Err(io::Error::other("the session refused a key update"));
             }
             self.key_request = Some(KeyRequest {
-                written: self.key_updates.written(),
-                answered: self.key_updates.answered(),
+                written: self.observed.written(),
+                answered: self.observed.answered(),
                 by: None,
             });
         }
@@ -692,7 +708,7 @@ impl OpensslStream {
         }
         self.flush(cx)?;
         if let Some(request) = self.key_request.as_mut() {
-            if request.by.is_none() && self.key_updates.written() > request.written {
+            if request.by.is_none() && self.observed.written() > request.written {
                 request.by = Some(now.checked_add(self.response).unwrap_or(now));
             }
         }
@@ -711,7 +727,7 @@ impl OpensslStream {
     /// Writes the answer to a KeyUpdate of the peer, which OpenSSL queues when it reads the request
     /// (clause 8.4). It runs after a read, while no write is in progress.
     fn answer_key_updates(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        let requested = self.key_updates.requested_by_peer();
+        let requested = self.observed.requested_by_peer();
         if requested == self.answered_peer_requests || self.writing {
             return Ok(());
         }

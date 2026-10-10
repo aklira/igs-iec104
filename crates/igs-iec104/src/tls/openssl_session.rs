@@ -4,17 +4,21 @@
 
 //! The only unsafe code of igs-iec104: the calls to OpenSSL that renegotiate a TLS 1.2 session
 //! (clause 7.4.5), that update the keys of a TLS 1.3 session (clause 8.4), and the message callback
-//! that counts the KeyUpdate messages. Q-028 approved this module for the renegotiation; the key
-//! update and its message callback are the same kind of call, and the maintainer approved them.
+//! that observes the handshake. Q-028 approved this module for the renegotiation; the key update and
+//! the observation of the messages are the same kind of call, and the maintainer approved them.
 //!
 //! The `openssl` crate has no wrapper for these calls, and the raw session pointer is not public.
 //! This module declares the OpenSSL functions it needs, and wraps each one in a safe function.
 //! Nothing else in the crate contains unsafe code (`#![deny(unsafe_code)]` in the crate root).
 
 use std::ffi::{c_int, c_long, c_void};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 use openssl::ssl::SslRef;
+
+use super::client_hello::{ClientHello, CLIENT_HELLO};
+use super::events::{SecurityEvent, SecurityEvents};
 
 extern "C" {
     /// `int SSL_renegotiate(SSL *s)`: asks for a new handshake on the session. The handshake runs
@@ -53,9 +57,9 @@ const KEY_UPDATE_MESSAGE: u8 = 24;
 const UPDATE_NOT_REQUESTED: u8 = 0;
 const UPDATE_REQUESTED: u8 = 1;
 
-/// The KeyUpdate messages of one session, counted by the message callback.
-#[derive(Debug, Default)]
-pub struct KeyUpdates {
+/// What the message callback of a session observes: the KeyUpdate messages (clause 8.4), and the
+/// ClientHello of a peer that connects to a station (clauses 6.2, 7.5.4 and 7.5.7).
+pub struct Observed {
     /// The KeyUpdate messages that this side wrote, with `update_requested`.
     written: AtomicU32,
     /// The KeyUpdate messages that this side received, with `update_not_requested`: the answers to
@@ -63,9 +67,28 @@ pub struct KeyUpdates {
     answered: AtomicU32,
     /// The KeyUpdate messages that this side received, with `update_requested`: the peer's requests.
     requested_by_peer: AtomicU32,
+    /// Where the events of a ClientHello go. None for a client, which receives no ClientHello.
+    events: Option<Arc<dyn SecurityEvents>>,
+    /// A ClientHello offered a CBC suite without encrypt-then-MAC: the session is terminated.
+    mac_then_encrypt: AtomicBool,
+    /// A ClientHello offered `psk_ke` only: the session is terminated (clause 8.3).
+    psk_ke_only: AtomicBool,
 }
 
-impl KeyUpdates {
+impl Observed {
+    /// The observation of a session. `events` receive the events of the ClientHello of a peer, when
+    /// this side is the station.
+    pub fn new(events: Option<Arc<dyn SecurityEvents>>) -> Self {
+        Self {
+            written: AtomicU32::new(0),
+            answered: AtomicU32::new(0),
+            requested_by_peer: AtomicU32::new(0),
+            events,
+            mac_then_encrypt: AtomicBool::new(false),
+            psk_ke_only: AtomicBool::new(false),
+        }
+    }
+
     /// The KeyUpdate messages written with `update_requested`.
     pub fn written(&self) -> u32 {
         self.written.load(Ordering::SeqCst)
@@ -80,6 +103,16 @@ impl KeyUpdates {
     pub fn requested_by_peer(&self) -> u32 {
         self.requested_by_peer.load(Ordering::SeqCst)
     }
+
+    /// True when a ClientHello offered a CBC suite without encrypt-then-MAC (clause 7.5.7).
+    pub fn mac_then_encrypt(&self) -> bool {
+        self.mac_then_encrypt.load(Ordering::SeqCst)
+    }
+
+    /// True when a ClientHello offered `psk_ke` only (clause 8.3).
+    pub fn psk_ke_only(&self) -> bool {
+        self.psk_ke_only.load(Ordering::SeqCst)
+    }
 }
 
 /// The OpenSSL pointer of a session. The `openssl` crate builds its wrappers on `foreign-types`,
@@ -89,15 +122,16 @@ fn pointer(ssl: &SslRef) -> *mut c_void {
     (ssl as *const SslRef).cast_mut().cast()
 }
 
-/// The message callback of a session. It counts the KeyUpdate messages of the handshake layer, in
-/// the direction they were written or received, and by their `request_update` field.
+/// The message callback of a session. It observes the handshake messages: the ClientHello of the peer,
+/// and the KeyUpdate messages in the direction they were written or received.
 ///
 /// # Safety
 ///
 /// OpenSSL calls it with the bytes of a message, valid for `len` octets for the duration of the call,
-/// and with the argument that `observe_key_updates` set: the `KeyUpdates` of a stream that is alive
-/// for as long as its session is (see `observe_key_updates`).
-unsafe extern "C" fn count_key_updates(
+/// and with the argument that `observe` set: the `Observed` of a stream that is alive for as long as
+/// its session is (see `observe`). The events of the observation must not panic: the callback runs
+/// inside OpenSSL.
+unsafe extern "C" fn observe_messages(
     write_p: c_int,
     _version: c_int,
     content_type: c_int,
@@ -111,41 +145,68 @@ unsafe extern "C" fn count_key_updates(
     }
     // SAFETY: `buf` holds `len` octets for the duration of the call (see the safety notes above).
     let message = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len) };
-    if message.first() != Some(&KEY_UPDATE_MESSAGE) {
-        return;
-    }
-    // SAFETY: `arg` is the `KeyUpdates` of the stream that installed this callback, alive as the
-    // session is (see the safety notes above). It is only read through shared references.
-    let counters = unsafe { &*arg.cast::<KeyUpdates>() };
-    match (write_p, message.get(4)) {
-        (1, Some(&UPDATE_REQUESTED)) => {
-            counters.written.fetch_add(1, Ordering::SeqCst);
-        }
-        (0, Some(&UPDATE_NOT_REQUESTED)) => {
-            counters.answered.fetch_add(1, Ordering::SeqCst);
-        }
-        (0, Some(&UPDATE_REQUESTED)) => {
-            counters.requested_by_peer.fetch_add(1, Ordering::SeqCst);
-        }
+    // SAFETY: `arg` is the `Observed` of the stream that installed this callback, alive as the session
+    // is (see the safety notes above). It is only read through shared references.
+    let observed = unsafe { &*arg.cast::<Observed>() };
+    match message.first() {
+        Some(&CLIENT_HELLO) if write_p == 0 => observe_client_hello(observed, message),
+        Some(&KEY_UPDATE_MESSAGE) => match (write_p, message.get(4)) {
+            (1, Some(&UPDATE_REQUESTED)) => {
+                observed.written.fetch_add(1, Ordering::SeqCst);
+            }
+            (0, Some(&UPDATE_NOT_REQUESTED)) => {
+                observed.answered.fetch_add(1, Ordering::SeqCst);
+            }
+            (0, Some(&UPDATE_REQUESTED)) => {
+                observed.requested_by_peer.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        },
         _ => {}
     }
 }
 
-/// Installs the message callback on the session, which counts into `counters`.
-///
-/// The counters must live as long as the session: the stream keeps them in an `Arc` and declares
-/// the session field first, so that the session is freed before the counters.
-pub fn observe_key_updates(ssl: &SslRef, counters: &KeyUpdates) {
-    let counters: *const KeyUpdates = counters;
+/// Reads the ClientHello of the peer: its events are raised as it arrives, and a CBC suite without
+/// encrypt-then-MAC is recorded for the end of the handshake.
+fn observe_client_hello(observed: &Observed, message: &[u8]) {
+    let Some(hello) = ClientHello::parse(message) else {
+        return;
+    };
+    let Some(events) = observed.events.as_ref() else {
+        return;
+    };
+    for event in hello.events() {
+        events.raise(event, "");
+    }
+    if hello.mac_then_encrypt() {
+        observed.mac_then_encrypt.store(true, Ordering::SeqCst);
+        events.raise(
+            SecurityEvent::NoEncryptThenMac,
+            "a CBC suite without encrypt-then-MAC",
+        );
+    }
+    if hello.psk_ke_only {
+        observed.psk_ke_only.store(true, Ordering::SeqCst);
+        events.raise(
+            SecurityEvent::NoEphemeralPskMode,
+            "psk_ke as the only key exchange mode",
+        );
+    }
+}
+
+/// Installs the observation on the session. The observation must live as long as the session: the
+/// stream keeps it in an `Arc`, and declares the session field first, so the session is freed first.
+pub fn observe(ssl: &SslRef, observed: &Observed) {
+    let observed: *const Observed = observed;
     // SAFETY: the session is the one of the reference, alive for the calls. The argument is the
-    // `KeyUpdates` the caller keeps alive for the session (see above).
+    // `Observed` that the caller keeps alive for the session (see above).
     unsafe {
-        SSL_set_msg_callback(pointer(ssl), count_key_updates);
+        SSL_set_msg_callback(pointer(ssl), observe_messages);
         SSL_ctrl(
             pointer(ssl),
             SSL_CTRL_SET_MSG_CALLBACK_ARG,
             0,
-            counters.cast_mut().cast(),
+            observed.cast_mut().cast(),
         );
     }
 }

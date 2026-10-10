@@ -36,6 +36,7 @@ use igs_iec104_link::TransferState;
 use openssl::ssl::{Ssl, SslConnector, SslMethod, SslVerifyMode, SslVersion};
 use openssl::x509::store::X509StoreBuilder;
 use openssl::x509::X509;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_openssl::SslStream;
@@ -1001,4 +1002,206 @@ fn crl_der(pem: &[u8]) -> Vec<u8> {
         .expect("a CRL")
         .to_der()
         .expect("DER")
+}
+
+/// A ClientHello in a record, written by hand: the record version, the legacy version, and the
+/// extensions as they are on the wire (with their length), or none.
+fn crafted_client_hello(record_version: u16, legacy_version: u16, extensions: &[u8]) -> Vec<u8> {
+    let mut body = legacy_version.to_be_bytes().to_vec();
+    body.extend([0u8; 32]);
+    body.push(0);
+    // One cipher suite of the profile: TLS_RSA_WITH_AES_128_CBC_SHA256 (table 9).
+    body.extend([0, 2, 0x00, 0x3C]);
+    body.extend([1, 0]);
+    body.extend(extensions);
+    let mut message = vec![1u8];
+    message.extend(&(body.len() as u32).to_be_bytes()[1..]);
+    message.extend(body);
+    let mut record = vec![0x16];
+    record.extend(record_version.to_be_bytes());
+    record.extend((message.len() as u16).to_be_bytes());
+    record.extend(message);
+    record
+}
+
+/// Sends a hand-made ClientHello to the station, and keeps the connection open.
+async fn send_hello(address: SocketAddr, hello: &[u8]) -> TcpStream {
+    let mut socket = TcpStream::connect(address).await.expect("connects");
+    socket.write_all(hello).await.expect("the hello is written");
+    socket
+}
+
+#[tokio::test]
+async fn a_client_that_proposes_only_tls_11_is_refused_with_the_alarm() {
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    let outcome = raw_client(station, |builder| {
+        builder.set_security_level(0);
+        builder
+            .set_min_proto_version(Some(SslVersion::TLS1_1))
+            .expect("TLS 1.1");
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_1))
+            .expect("TLS 1.1");
+    })
+    .await;
+    assert!(outcome.is_err(), "the station refuses TLS 1.1");
+    assert!(raised(&events, SecurityEvent::DeprecatedVersion).await);
+}
+
+#[tokio::test]
+async fn a_client_that_proposes_ssl_3_is_refused_with_the_alarm() {
+    // Clause 6.2: a proposal of versions prior to TLS 1.0 raises the alarm of a disallowed version.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    let _socket = send_hello(station, &crafted_client_hello(0x0301, 0x0300, &[])).await;
+    assert!(raised(&events, SecurityEvent::DisallowedVersion).await);
+}
+
+#[tokio::test]
+async fn a_client_without_signature_algorithms_raises_the_warning() {
+    // Clause 7.5.4: a TLS 1.2 hello without the extension raises the warning. The hello is cut
+    // after it, so the handshake never completes, and the warning is what is checked.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    let _socket = send_hello(station, &crafted_client_hello(0x0303, 0x0303, &[])).await;
+    assert!(raised(&events, SecurityEvent::NoSignatureAlgorithmExtension).await);
+}
+
+#[tokio::test]
+async fn a_client_that_signals_sha_1_with_rsa_raises_the_warning_and_is_accepted() {
+    // Clause 7.5.4: {SHA-1, RSA} in the signature algorithms raises the warning. The client still
+    // has a common scheme (ECDSA with SHA-256), so the handshake succeeds.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    raw_client(station, |builder| {
+        with_client_identity(builder);
+        // TLS 1.2: TLS 1.3 has no RSA with SHA-1, so a TLS 1.3 client does not signal it. Level 0 keeps
+        // OpenSSL from dropping SHA-1 from the list it sends.
+        builder.set_security_level(0);
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_2))
+            .expect("TLS 1.2");
+        builder
+            .set_sigalgs_list("RSA+SHA1:ecdsa_secp256r1_sha256")
+            .expect("the schemes");
+    })
+    .await
+    .expect("the handshake succeeds");
+    assert!(raised(&events, SecurityEvent::DeprecatedSignatureAlgorithm).await);
+}
+
+/// The extensions of a hand-made ClientHello: their total length, then each extension.
+fn extension_block(extensions: &[(u16, &[u8])]) -> Vec<u8> {
+    let mut block = Vec::new();
+    for (kind, data) in extensions {
+        block.extend(kind.to_be_bytes());
+        block.extend((data.len() as u16).to_be_bytes());
+        block.extend(*data);
+    }
+    let mut out = (block.len() as u16).to_be_bytes().to_vec();
+    out.extend(block);
+    out
+}
+
+#[tokio::test]
+async fn early_data_in_the_handshake_raises_the_warning() {
+    // Clause 8.8.11: the early data is ignored, and the warning is raised.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    let hello = crafted_client_hello(0x0303, 0x0303, &extension_block(&[(42, &[])]));
+    let _socket = send_hello(station, &hello).await;
+    assert!(raised(&events, SecurityEvent::EarlyDataIgnored).await);
+}
+
+#[tokio::test]
+async fn a_client_that_offers_only_psk_ke_raises_the_alarm_and_is_not_established() {
+    // Clause 8.3: psk_ke as the only mode is an alarm, and the session is terminated.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    let hello = crafted_client_hello(0x0303, 0x0303, &extension_block(&[(45, &[1, 0])]));
+    let _socket = send_hello(station, &hello).await;
+    assert!(raised(&events, SecurityEvent::NoEphemeralPskMode).await);
+}
+
+#[tokio::test]
+async fn a_cbc_suite_without_encrypt_then_mac_ends_the_session_with_the_alarm() {
+    // Clause 7.5.7: a client that offers a CBC suite without encrypt-then-MAC is refused.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    // SSL_OP_NO_ENCRYPT_THEN_MAC (bit 19 of the installed ssl.h): the client does not send the extension.
+    let no_encrypt_then_mac = openssl::ssl::SslOptions::from_bits_retain(1 << 19);
+    let _ = raw_client(station, |builder| {
+        with_client_identity(builder);
+        builder.set_options(no_encrypt_then_mac);
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_2))
+            .expect("TLS 1.2");
+        builder
+            .set_cipher_list("AES128-SHA256")
+            .expect("the CBC suite");
+    })
+    .await;
+    assert!(raised(&events, SecurityEvent::NoEncryptThenMac).await);
+    sleep(Duration::from_millis(200)).await;
+    assert!(
+        !events.seen().contains(&SecurityEvent::TlsHandshakeSuccess),
+        "the session is not established"
+    );
 }

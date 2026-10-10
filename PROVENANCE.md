@@ -257,6 +257,27 @@ substituted time. The API names it `substituted`.
 - **Test**: `tls_openssl::an_rsa_key_of_1024_bits_is_refused_unless_the_policy_allows_it`,
   `tls_openssl::an_rsa_key_below_1024_bits_is_refused_even_when_the_policy_allows_1024`.
 
+### D-020 — The events of a ClientHello are raised as it arrives
+
+- **Decision**: a station raises the events of a ClientHello from OpenSSL's message callback, as the
+  message arrives, and before the handshake is complete. These are the versions (DisallowedVersion below
+  TLS 1.0, DeprecatedVersion for TLS 1.0 and 1.1), the missing signature_algorithm extension, a SHA-1 with
+  RSA signature, early data, and psk_ke as the only mode. The two sessions that the standard terminates
+  are terminated after the handshake, because the callback cannot end a handshake: a CBC suite without
+  encrypt-then-MAC (clause 7.5.7) and psk_ke only (clause 8.3). A peer that never completes its handshake
+  is closed by the time-out of the handshake, t0.
+- **Sources**: 62351-3 clauses 6.2, 7.5.4, 7.5.7, 8.3 and 8.8.11; RFC 5246 (the signature_algorithm
+  extension, section 7.4.1.4.1, and the legacy version); RFC 8446 (supported_versions, section 4.2.1;
+  psk_key_exchange_modes, section 4.2.9; early_data, section 4.2.10).
+- **Confidence**: medium. The clauses say the session "shall be terminated"; they do not say when.
+- **Test**: `client_hello` unit tests, and `tls_openssl::a_client_that_proposes_only_tls_11_is_refused_with_the_alarm`,
+  `tls_openssl::a_client_that_proposes_ssl_3_is_refused_with_the_alarm`,
+  `tls_openssl::a_client_without_signature_algorithms_raises_the_warning`,
+  `tls_openssl::a_client_that_signals_sha_1_with_rsa_raises_the_warning_and_is_accepted`,
+  `tls_openssl::early_data_in_the_handshake_raises_the_warning`,
+  `tls_openssl::a_client_that_offers_only_psk_ke_raises_the_alarm_and_is_not_established`,
+  `tls_openssl::a_cbc_suite_without_encrypt_then_mac_ends_the_session_with_the_alarm`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |
