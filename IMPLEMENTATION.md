@@ -381,7 +381,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | F5 AI log and questions | [x] |
 | C1 Primitive formats | [x] |
 | C2 Information elements | [x] |
-| C3 ASDU header | [ ] |
+| C3 ASDU header | [x] |
 | C4 ASDU bodies | [ ] |
 | C5 APCI framing | [ ] |
 | C6 Property tests | [ ] |

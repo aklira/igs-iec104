@@ -15,6 +15,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | F4 Interop bench skeleton | Done, committed | log `docs/ai-log/F4.md` |
 | C1 Primitive formats | Done, committed | log `docs/ai-log/C1.md`, decisions D-006 and D-007 in `PROVENANCE.md` |
 | C2 Information elements | Done, committed | log `docs/ai-log/C2.md`, decisions D-008 and D-009 in `PROVENANCE.md` |
+| C3 ASDU header | Done, committed | log `docs/ai-log/C3.md`, typed errors in `error.rs` |
 
 ## Decisions taken (beyond the plan)
 
@@ -52,7 +53,10 @@ decisions:
   Podman). It pins FledgePower v1.2.4 by digest and starts each peer with
   `bench/peer/bootstrap.sh` (one service per container).
 
-- The generated profile is ready for C3-C4. `object_size_bits(125) == None` must
-  be handled when C4 decodes. C3 (ASDU header) and C4 (ASDU bodies, which needs
-  C2 and C3) are the next codec tasks. C4 reads the element types in
-  `elements`, and the all-zero range time of F_SC_NB_1 is `RangeTime::Unbounded`.
+- Open point for C4: the header returns `DecodeError` (typed), while the C1 and C2
+  element types return `Option`. Pick one error path for the ASDU body, either
+  by mapping the element results or by moving the elements to `Result`.
+- The generated profile is ready for C4. `object_size_bits(125) == None` must
+  be handled when C4 decodes. C4 (ASDU bodies) is the next codec task: C2 and
+  C3 are done. It reads the element types in `elements`; the all-zero range
+  time of F_SC_NB_1 is `RangeTime::Unbounded`.
