@@ -74,6 +74,28 @@ itself, to be confirmed by an observation test against other implementations.
 - **Confidence**: medium (internal contradiction in the 104).
 - **Test**: to be written; to be confirmed by observation.
 
+### D-006 — Day of week 0 in CP56Time2a
+
+- **Decision**: day of week 0 ("not used") is accepted on encode and decode; 1 to 7 are the days
+  from Monday to Sunday; values above 7 are rejected.
+- **Sources**: 101 §7.2.6.18: day of week 0 is "not used", 1 to 7 are used. The range given in
+  `formats.yaml` (1..7) omits 0 and contradicts the note of the same file, so the 101 text prevails.
+- **Confidence**: high.
+- **Test**: `formats::times` tests `cp56_min` (day of week 0 accepted) and
+  `cp56_rejects_values_outside_each_range` (day of week 8 rejected).
+
+### D-007 — Reserved bits of the time tags
+
+- **Decision**: reserved bits (RES2, RES3, RES4 of CP56Time2a) are written as 0; on decode they are
+  ignored and any value is accepted. RES1 is not reserved: it is GEN (see the next paragraph).
+- **Sources**: 101 §7.2.6.18 and §7.2.6.19 name the reserved bits without giving a rule for the
+  receiver. 60870-5-4 §6.8 gives the layout only.
+- **Confidence**: medium (silent standard; the choice keeps the decoder tolerant).
+- **Test**: `formats::times` test `cp56_reserved_bits_are_ignored_on_decode`.
+
+RES1 of CP24Time2a and CP56Time2a is GEN in 101 §7.2.6.18: 0 for a genuine time, 1 for a
+substituted time. The API names it `substituted`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

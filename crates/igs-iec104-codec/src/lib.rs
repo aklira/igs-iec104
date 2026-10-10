@@ -19,3 +19,6 @@
 
 /// Constants generated from the profile data files; see the banner inside.
 pub mod generated;
+
+/// Primitive formats: bit fields, integers, real numbers and time tags.
+pub mod formats;

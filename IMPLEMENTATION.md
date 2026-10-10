@@ -379,7 +379,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | F3 Code generation from the profile | [x] |
 | F4 Interop bench skeleton ⛔ | [x] |
 | F5 AI log and questions | [x] |
-| C1 Primitive formats | [ ] |
+| C1 Primitive formats | [x] |
 | C2 Information elements | [ ] |
 | C3 ASDU header | [ ] |
 | C4 ASDU bodies | [ ] |
