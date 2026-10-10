@@ -29,6 +29,7 @@ pub mod procedures;
 pub mod process_image;
 pub mod redundancy;
 pub mod server;
+pub mod tls;
 pub mod transport;
 
 pub use client::{Client, ClientConfig, ClientError, Event, ReconnectPolicy};
