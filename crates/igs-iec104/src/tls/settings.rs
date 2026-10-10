@@ -23,6 +23,8 @@ pub const MIN_RENEGOTIATION: Duration = Duration::from_secs(10 * 60);
 pub const MAX_RENEGOTIATION: Duration = Duration::from_secs(24 * 60 * 60);
 /// The interval that the profile suggests (clause 7.4.5).
 pub const DEFAULT_RENEGOTIATION: Duration = Duration::from_secs(12 * 60 * 60);
+/// The interval of the key update of a TLS 1.3 session, which the profile suggests (clause 8.4).
+pub const DEFAULT_KEY_UPDATE: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// The local identity: the certificate chain, the leaf first, and the private key. Both are DER.
 #[derive(Clone)]
@@ -103,6 +105,7 @@ pub struct TlsSettings {
     tls13: bool,
     max_certificate_size: usize,
     renegotiation: Option<Duration>,
+    key_update: Option<Duration>,
     events: Arc<dyn SecurityEvents>,
 }
 
@@ -117,6 +120,7 @@ impl TlsSettings {
             tls13: true,
             max_certificate_size: MIN_CERTIFICATE_SIZE,
             renegotiation: Some(DEFAULT_RENEGOTIATION),
+            key_update: Some(DEFAULT_KEY_UPDATE),
             events,
         }
     }
@@ -152,6 +156,15 @@ impl TlsSettings {
         self
     }
 
+    /// Sets the interval of the key update of a TLS 1.3 session, or `None` for no key update. The
+    /// profile suggests 6 hours (clause 8.4). The OpenSSL backend performs the update; the rustls
+    /// backend does not (see its module).
+    #[must_use]
+    pub fn with_key_update(mut self, interval: Option<Duration>) -> Self {
+        self.key_update = interval;
+        self
+    }
+
     /// Checks the settings against the profile. The backend calls it before it builds anything.
     pub fn validate(&self) -> Result<(), TlsError> {
         if self.max_certificate_size < MIN_CERTIFICATE_SIZE {
@@ -165,6 +178,11 @@ impl TlsSettings {
                     "the renegotiation interval is 10 minutes to 24 hours".into(),
                 ));
             }
+        }
+        if self.key_update == Some(Duration::ZERO) {
+            return Err(TlsError::Invalid(
+                "the key update interval must not be zero".into(),
+            ));
         }
         Ok(())
     }
@@ -197,6 +215,11 @@ impl TlsSettings {
     /// The interval between two renegotiations of a TLS 1.2 session, if any.
     pub fn renegotiation(&self) -> Option<Duration> {
         self.renegotiation
+    }
+
+    /// The interval of the key update of a TLS 1.3 session, if any.
+    pub fn key_update(&self) -> Option<Duration> {
+        self.key_update
     }
 
     /// Where the security events go.
@@ -238,6 +261,27 @@ mod tests {
             .validate()
             .is_err());
         assert!(settings.with_max_certificate_size(8192).validate().is_ok());
+    }
+
+    #[test]
+    fn the_key_update_interval_defaults_to_six_hours_and_must_not_be_zero() {
+        let identity = Identity::new(vec![vec![1]], vec![2], &Discard).expect("valid");
+        let trust = TrustAnchors::new(vec![vec![3]]).expect("one anchor");
+        let settings = TlsSettings::new(identity, trust, Arc::new(Discard));
+        assert_eq!(
+            settings.key_update(),
+            Some(Duration::from_secs(6 * 60 * 60))
+        );
+        assert!(settings.clone().with_key_update(None).validate().is_ok());
+        assert!(settings
+            .clone()
+            .with_key_update(Some(Duration::ZERO))
+            .validate()
+            .is_err());
+        assert!(settings
+            .with_key_update(Some(Duration::from_millis(1)))
+            .validate()
+            .is_ok());
     }
 
     #[test]

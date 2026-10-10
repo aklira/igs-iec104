@@ -11,13 +11,14 @@
 //! trust anchor it chains to, and its revocation in the CRLs (clause 6.4.4.4). The callback raises
 //! the security events of Annex A for the checks it makes.
 //!
-//! TLS 1.2 sessions are renegotiated once the interval of the settings has passed (clause 7.4.5). The
-//! `openssl` crate has no wrapper for renegotiation: the call goes through `openssl_renegotiation`, the
-//! only module of igs-iec104 that contains unsafe code (Q-028, approved).
+//! TLS 1.2 sessions are renegotiated once the interval of the settings has passed (clause 7.4.5), and
+//! TLS 1.3 sessions update their keys once the key update interval has passed (clause 8.4). The
+//! `openssl` crate has no wrapper for these calls: they go through `openssl_session`, the only module of
+//! igs-iec104 that contains unsafe code (Q-028, approved).
 //!
 //! This is the default backend. Each mandatory item of the profile has a test that negotiates it
-//! (`every_mandatory_item_of_the_profile_is_negotiated`). Not done yet: the key update interval of
-//! clause 8.4 (docs/ai-log/X1.md).
+//! (`every_mandatory_item_of_the_profile_is_negotiated`). A peer that does not answer a renegotiation or
+//! a KeyUpdate in time ends the session, with its alarm (D-015 and D-016 in PROVENANCE.md).
 
 use std::future::Future;
 use std::io;
@@ -38,7 +39,7 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep_until, Instant as TokioInstant, Sleep};
 use tokio_openssl::SslStream;
 
-use super::openssl_renegotiation;
+use super::openssl_session::{self, KeyUpdates};
 
 use super::events::{SecurityEvent, SecurityEvents};
 use super::settings::TlsSettings;
@@ -68,10 +69,10 @@ const SIGALGS: &str = "rsa_pss_rsae_sha256:rsa_pss_pss_sha256:ecdsa_secp256r1_sh
 /// The message of the OpenSSL reason for a client that sent no certificate when one was required.
 const NO_CLIENT_CERTIFICATE: &str = "peer did not return a certificate";
 
-/// The time that a peer has to answer a renegotiation request (clause 7.4.5). The standard gives
-/// none. The default is t0, the time-out of connection establishment (clause 9.6 of IEC 60870-5-104),
-/// so that a renegotiation is bounded as a connection is (D-015 in PROVENANCE.md).
-const RENEGOTIATION_RESPONSE: Duration = Duration::from_secs(30);
+/// The time that a peer has to answer a renegotiation request (clause 7.4.5) or a KeyUpdate (clause 8.4).
+/// The standard gives none. The default is t0, the time-out of connection establishment (clause 9.6 of
+/// IEC 60870-5-104), so that they are bounded as a connection is (D-015 and D-016 in PROVENANCE.md).
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The OpenSSL backend: the client and server contexts of one station.
 pub struct OpensslBackend {
@@ -79,6 +80,7 @@ pub struct OpensslBackend {
     server: SslContext,
     events: Arc<dyn SecurityEvents>,
     renegotiation: Option<Duration>,
+    key_update: Option<Duration>,
     response: Duration,
 }
 
@@ -112,7 +114,8 @@ impl OpensslBackend {
             server: server.build(),
             events,
             renegotiation: settings.renegotiation(),
-            response: RENEGOTIATION_RESPONSE,
+            key_update: settings.key_update(),
+            response: RESPONSE_TIMEOUT,
         })
     }
 }
@@ -326,11 +329,19 @@ impl OpensslBackend {
         self
     }
 
+    /// Changes the interval of the key update, for the tests.
+    #[cfg(test)]
+    pub(crate) fn with_key_update(mut self, interval: Option<Duration>) -> Self {
+        self.key_update = interval;
+        self
+    }
+
     /// Secures an outgoing connection, and returns the stream of the backend.
     /// The timers of the streams that this backend secures.
     fn timers(&self) -> Timers {
         Timers {
             interval: self.renegotiation,
+            key_update: self.key_update,
             response: self.response,
             events: Arc::clone(&self.events),
         }
@@ -396,16 +407,34 @@ impl TlsBackend for OpensslBackend {
 /// peer does not answer in time ends the session, with the alarm TLS_NO_RENEG (D-015).
 pub struct OpensslStream {
     inner: SslStream<TcpStream>,
+    /// The KeyUpdate messages of the session, counted by its message callback. It is declared after
+    /// the session, so that the session is freed before the counters.
+    key_updates: Arc<KeyUpdates>,
     interval: Option<Duration>,
+    key_interval: Option<Duration>,
     response: Duration,
     events: Arc<dyn SecurityEvents>,
     due: Instant,
+    key_due: Instant,
     /// The time by which the peer must answer the renegotiation that this side asked for (clause 7.4.5).
     answer: Option<Instant>,
+    /// The KeyUpdate that this side asked for, while the peer has not answered it (clause 8.4).
+    key_request: Option<KeyRequest>,
+    /// The KeyUpdate messages of the peer that have been answered.
+    answered_peer_requests: u32,
     /// Wakes the stream at its next deadline when no read or write does: an idle session is then
-    /// still renegotiated, and a request that the peer does not answer still ends it.
+    /// still renegotiated or updated, and a request that the peer does not answer still ends it.
     timer: Option<Pin<Box<Sleep>>>,
     writing: bool,
+}
+
+/// A KeyUpdate that this side asked for: the counts of the KeyUpdate messages when it was asked, and
+/// the time by which the peer must answer it. The time is set once the message is written.
+#[derive(Clone, Copy, Debug)]
+struct KeyRequest {
+    written: u32,
+    answered: u32,
+    by: Option<Instant>,
 }
 
 /// True when the peer refused a renegotiation with a no_renegotiation alert (RFC 5746): OpenSSL then
@@ -426,6 +455,7 @@ fn refused_renegotiation(error: &io::Error) -> bool {
 /// The timers of a session, and the events that they raise.
 struct Timers {
     interval: Option<Duration>,
+    key_update: Option<Duration>,
     response: Duration,
     events: Arc<dyn SecurityEvents>,
 }
@@ -433,34 +463,58 @@ struct Timers {
 impl OpensslStream {
     fn new(inner: SslStream<TcpStream>, timers: Timers) -> Self {
         let now = Instant::now();
-        let due = timers
-            .interval
+        // The renegotiation applies to TLS 1.2 sessions, and the key update to TLS 1.3 sessions.
+        let version = inner.ssl().version2();
+        let (interval, key_interval) = if version == Some(SslVersion::TLS1_2) {
+            (timers.interval, None)
+        } else if version == Some(SslVersion::TLS1_3) {
+            (None, timers.key_update)
+        } else {
+            (None, None)
+        };
+        let key_updates = Arc::new(KeyUpdates::default());
+        openssl_session::observe_key_updates(inner.ssl(), &key_updates);
+        let due = interval
+            .and_then(|interval| now.checked_add(interval))
+            .unwrap_or(now);
+        let key_due = key_interval
             .and_then(|interval| now.checked_add(interval))
             .unwrap_or(now);
         Self {
             inner,
-            interval: timers.interval,
+            key_updates,
+            interval,
+            key_interval,
             response: timers.response,
             events: timers.events,
             due,
+            key_due,
             answer: None,
+            key_request: None,
+            answered_peer_requests: 0,
             timer: None,
             writing: false,
         }
     }
 
-    /// The number of renegotiations that have started on the session, on either side.
+    /// The number of renegotiations that have started on the session so far, on either side.
     pub fn renegotiations(&self) -> i64 {
-        openssl_renegotiation::total(self.inner.ssl())
+        openssl_session::total(self.inner.ssl())
     }
 
-    /// Runs the timers of the session. A renegotiation is asked for once the interval has passed, and
-    /// none is asked for while another is unanswered. A peer that does not answer in time ends the
-    /// session, and the alarm of a missed renegotiation is raised (clause 7.4.5).
-    fn service(&mut self) -> io::Result<()> {
+    /// The KeyUpdate messages of the session: the ones written, the answers received, and the requests
+    /// of the peer.
+    pub fn key_updates(&self) -> &KeyUpdates {
+        &self.key_updates
+    }
+
+    /// Runs the renegotiation timer of a TLS 1.2 session. A renegotiation is asked for once the interval
+    /// has passed, and none is asked for while another is unanswered. A peer that does not answer in
+    /// time ends the session, and the alarm of a missed renegotiation is raised (clause 7.4.5).
+    fn service_renegotiation(&mut self) -> io::Result<()> {
         let now = Instant::now();
         if let Some(by) = self.answer {
-            if !openssl_renegotiation::pending(self.inner.ssl()) {
+            if !openssl_session::pending(self.inner.ssl()) {
                 self.answer = None;
                 if let Some(interval) = self.interval {
                     self.due = now.checked_add(interval).unwrap_or(now);
@@ -481,35 +535,86 @@ impl OpensslStream {
             return Ok(());
         }
         self.due = now.checked_add(interval).unwrap_or(now);
-        if self.inner.ssl().version2() != Some(SslVersion::TLS1_2) {
-            return Ok(());
-        }
-        if !openssl_renegotiation::request(self.inner.ssl()) {
+        if !openssl_session::request(self.inner.ssl()) {
             return Err(io::Error::other("the session refused a renegotiation"));
         }
         self.answer = Some(now.checked_add(self.response).unwrap_or(now));
         Ok(())
     }
 
-    /// Sets the timer to the next deadline: the answer that is awaited, else the next renegotiation.
-    /// It stops while a write is in progress, because the write wakes the stream itself.
-    fn arm(&mut self) {
-        let deadline = if self.writing {
-            None
-        } else if let Some(by) = self.answer {
-            Some(by)
+    /// Runs the key update of a TLS 1.3 session (clause 8.4). When the interval has passed, a KeyUpdate
+    /// that asks the peer to update its keys too is queued and written. The peer must answer it within
+    /// the response time, counted from the write. An unanswered KeyUpdate ends the session, with the
+    /// alarm TLS_NO_SK_UPDATE.
+    fn service_key_update(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        let Some(interval) = self.key_interval else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if let Some(request) = self.key_request {
+            if self.key_updates.answered() > request.answered {
+                self.key_request = None;
+                self.key_due = now.checked_add(interval).unwrap_or(now);
+                return Ok(());
+            }
+            if let Some(by) = request.by {
+                if now >= by {
+                    self.key_request = None;
+                    self.events.raise(
+                        SecurityEvent::KeyUpdateExpired,
+                        "the peer did not answer the key update in time",
+                    );
+                    return Err(io::Error::other(
+                        "the peer did not answer the key update in time",
+                    ));
+                }
+                return Ok(());
+            }
         } else {
-            self.interval.map(|_| self.due)
-        };
-        let Some(deadline) = deadline else {
-            self.timer = None;
-            return;
-        };
-        let deadline = TokioInstant::from_std(deadline);
-        match self.timer.as_mut() {
-            Some(timer) => timer.as_mut().reset(deadline),
-            None => self.timer = Some(Box::pin(sleep_until(deadline))),
+            if self.writing || now < self.key_due {
+                return Ok(());
+            }
+            self.key_due = now.checked_add(interval).unwrap_or(now);
+            if !openssl_session::request_key_update(self.inner.ssl()) {
+                return Err(io::Error::other("the session refused a key update"));
+            }
+            self.key_request = Some(KeyRequest {
+                written: self.key_updates.written(),
+                answered: self.key_updates.answered(),
+                by: None,
+            });
         }
+        // The queued KeyUpdate is written by a handshake call. It waits while a write is in progress.
+        if self.writing {
+            return Ok(());
+        }
+        self.flush(cx)?;
+        if let Some(request) = self.key_request.as_mut() {
+            if request.by.is_none() && self.key_updates.written() > request.written {
+                request.by = Some(now.checked_add(self.response).unwrap_or(now));
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs a handshake call of the session. It writes the KeyUpdate messages that OpenSSL has queued,
+    /// without waiting for the peer.
+    fn flush(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        match Pin::new(&mut self.inner).poll_do_handshake(cx) {
+            Poll::Ready(Err(error)) => Err(io::Error::other(error)),
+            Poll::Ready(Ok(())) | Poll::Pending => Ok(()),
+        }
+    }
+
+    /// Writes the answer to a KeyUpdate of the peer, which OpenSSL queues when it reads the request
+    /// (clause 8.4). It runs after a read, while no write is in progress.
+    fn answer_key_updates(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        let requested = self.key_updates.requested_by_peer();
+        if requested == self.answered_peer_requests || self.writing {
+            return Ok(());
+        }
+        self.answered_peer_requests = requested;
+        self.flush(cx)
     }
 
     /// Raises the alarm when the peer refused a request of this side with a no_renegotiation alert
@@ -524,11 +629,36 @@ impl OpensslStream {
         }
     }
 
+    /// Sets the timer to the next deadline of the session, or stops it while a write is in progress: the
+    /// write wakes the stream itself.
+    fn arm(&mut self) {
+        let renegotiation = self.answer.or_else(|| self.interval.map(|_| self.due));
+        let key_update = match self.key_request {
+            Some(request) => request.by,
+            None => self.key_interval.map(|_| self.key_due),
+        };
+        let deadline = if self.writing {
+            None
+        } else {
+            [renegotiation, key_update].into_iter().flatten().min()
+        };
+        let Some(deadline) = deadline else {
+            self.timer = None;
+            return;
+        };
+        let deadline = TokioInstant::from_std(deadline);
+        match self.timer.as_mut() {
+            Some(timer) => timer.as_mut().reset(deadline),
+            None => self.timer = Some(Box::pin(sleep_until(deadline))),
+        }
+    }
+
     /// Runs the timers, and registers the waker of the next deadline. A deadline that has already
     /// passed is handled before the read or write goes on.
     fn poll_timers(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
         for _ in 0..2 {
-            self.service()?;
+            self.service_renegotiation()?;
+            self.service_key_update(cx)?;
             self.arm();
             let Some(timer) = self.timer.as_mut() else {
                 break;
@@ -554,6 +684,11 @@ impl AsyncRead for OpensslStream {
         let result = Pin::new(&mut this.inner).poll_read(cx, buf);
         if let Poll::Ready(Err(error)) = &result {
             this.note_refusal(error);
+        }
+        if matches!(result, Poll::Ready(Ok(()))) {
+            if let Err(error) = this.answer_key_updates(cx) {
+                return Poll::Ready(Err(error));
+            }
         }
         result
     }

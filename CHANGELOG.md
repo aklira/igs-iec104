@@ -23,6 +23,9 @@ All notable changes to this project are recorded in this file. The format follow
 - Examples `client`, `server`, `redundancy` and `tls`.
 - The OpenSSL backend ends a TLS 1.2 session whose renegotiation the peer does not answer in time, or
   refuses, with the alarm TLS_NO_RENEG (clause 7.4.5; the time is D-015 in PROVENANCE.md).
+- The OpenSSL backend updates the keys of a TLS 1.3 session at the key update interval (default 6 hours,
+  `TlsSettings::with_key_update`), and ends the session with the alarm TLS_NO_SK_UPDATE when the peer
+  does not answer the KeyUpdate in time (clause 8.4; the time is D-016 in PROVENANCE.md).
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
 ### Fixed
@@ -39,8 +42,8 @@ All notable changes to this project are recorded in this file. The format follow
   backend renegotiates a TLS 1.2 session at the configured interval (default 12 hours). The rustls
   backend does not renegotiate, and it lacks the mandatory CBC and DHE suites of TLS 1.2, CCM, ffdhe2048,
   rsa_pss_pss_sha256 and the renegotiation (decision Q-025, `docs/ai-log/X1.md`).
-- Neither backend yet applies the key update interval of clause 8.4. The default build needs the
-  OpenSSL development files (`libssl-dev`).
+- The rustls backend does not update the keys of a TLS 1.3 session (clause 8.4); the OpenSSL backend
+  does. The default build needs the OpenSSL development files (`libssl-dev`).
 - The demo station `igs104-server` serves a built-in set of points, or the points of a TOML file given
   with `--points`.
 - The interop, load and switchover tests under load are not done.

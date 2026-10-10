@@ -5,7 +5,8 @@ Industrial-grade IEC 60870-5-104 protocol stack for SCADA and telecontrol, writt
 **Status: pre-release (0.1.0, not published).** The codec, the link session, the async client and
 controlled station with their redundancy groups, and the two binaries are implemented and tested.
 TLS (IEC 62351-3) runs over OpenSSL, the default feature `openssl`, which offers every mandatory item
-of the profile and renegotiates TLS 1.2 sessions. The feature `rustls` is the alternative backend,
+of the profile, renegotiates TLS 1.2 sessions and updates the keys of TLS 1.3 sessions. The feature
+`rustls` is the alternative backend,
 with the gaps listed in [CHANGELOG.md](CHANGELOG.md). The OpenSSL backend needs the OpenSSL
 development files (`libssl-dev`); without them, build with `--no-default-features` (no TLS backend)
 or `--no-default-features --features rustls`. The demo station `igs104-server` serves a built-in set

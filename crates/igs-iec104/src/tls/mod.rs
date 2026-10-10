@@ -31,7 +31,7 @@ pub mod openssl_backend;
 
 #[cfg(feature = "openssl")]
 #[allow(unsafe_code)]
-pub mod openssl_renegotiation;
+pub mod openssl_session;
 
 /// A TLS setting, certificate or handshake that the profile or the backend refuses.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -191,8 +191,8 @@ impl SecurityEvents for Events {
     }
 }
 
-/// A TLS 1.2 client with the test certificate and the given options.
-async fn peer(tcp: TcpStream, options: SslOptions) -> SslStream<TcpStream> {
+/// A client with the test certificate, the given options and the highest version `max`.
+async fn peer(tcp: TcpStream, options: SslOptions, max: SslVersion) -> SslStream<TcpStream> {
     let mut builder = SslConnector::builder(SslMethod::tls_client()).expect("a connector");
     let mut store = X509StoreBuilder::new().expect("a store");
     for root in X509::stack_from_pem(fixture!("roots.pem")).expect("roots") {
@@ -208,8 +208,8 @@ async fn peer(tcp: TcpStream, options: SslOptions) -> SslStream<TcpStream> {
     let key = PKey::private_key_from_pem(fixture!("client.key")).expect("the key");
     builder.set_private_key(&key).expect("the key");
     builder
-        .set_max_proto_version(Some(SslVersion::TLS1_2))
-        .expect("TLS 1.2");
+        .set_max_proto_version(Some(max))
+        .expect("the highest version");
     builder.set_options(options);
     let ssl = builder
         .build()
@@ -225,34 +225,47 @@ async fn peer(tcp: TcpStream, options: SslOptions) -> SslStream<TcpStream> {
     stream
 }
 
-/// A station that asks for a renegotiation at 50 ms, and gives the peer 200 ms to answer, with the
-/// station's own handshake and its events. The peer is connected with `options`.
+/// A station with the test server certificate, which answers within 200 ms, and a peer with the given
+/// options and highest version. The station renegotiates at `renegotiation` and updates its keys at
+/// `key_update`. It returns the peer, the station's session and the events of the station.
 async fn station_with_peer(
+    peer_max: SslVersion,
     options: SslOptions,
+    renegotiation: Option<Duration>,
+    key_update: Option<Duration>,
 ) -> (SslStream<TcpStream>, OpensslStream, Arc<Events>) {
     let events = Arc::new(Events::default());
     let shared: Arc<dyn SecurityEvents> = events.clone();
     let station = backend_with(
         fixture!("server.pem"),
         fixture!("server.key"),
-        Some(Duration::from_millis(50)),
-        false,
+        renegotiation,
+        true,
         shared,
     )
+    .with_key_update(key_update)
     .with_response(Duration::from_millis(200));
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("an address");
     let (accepted, connected) = tokio::join!(listener.accept(), TcpStream::connect(address));
     let (server_tcp, _) = accepted.expect("accepted");
     let client_tcp = connected.expect("connected");
-    let (peer, session) =
-        tokio::join!(peer(client_tcp, options), station.accept_stream(server_tcp));
+    let (peer, session) = tokio::join!(
+        peer(client_tcp, options, peer_max),
+        station.accept_stream(server_tcp)
+    );
     (peer, session.expect("the station's handshake"), events)
 }
 
 #[tokio::test]
 async fn a_peer_that_refuses_renegotiation_ends_the_session_with_the_alarm() {
-    let (mut peer, mut session, events) = station_with_peer(SslOptions::NO_RENEGOTIATION).await;
+    let (mut peer, mut session, events) = station_with_peer(
+        SslVersion::TLS1_2,
+        SslOptions::NO_RENEGOTIATION,
+        Some(Duration::from_millis(50)),
+        None,
+    )
+    .await;
     // The peer reads, so that it receives the request and refuses it with an alert.
     tokio::spawn(async move {
         let mut buffer = [0u8; 64];
@@ -281,7 +294,13 @@ async fn a_peer_that_refuses_renegotiation_ends_the_session_with_the_alarm() {
 #[tokio::test]
 async fn a_peer_that_does_not_answer_a_renegotiation_ends_the_session_with_the_alarm() {
     // The peer neither reads nor answers: the station's timer alone must end the session.
-    let (_silent, mut session, events) = station_with_peer(SslOptions::empty()).await;
+    let (_silent, mut session, events) = station_with_peer(
+        SslVersion::TLS1_2,
+        SslOptions::empty(),
+        Some(Duration::from_millis(50)),
+        None,
+    )
+    .await;
 
     let mut buffer = [0u8; 16];
     let outcome = timeout(Duration::from_secs(10), session.read(&mut buffer))
@@ -332,4 +351,81 @@ async fn an_idle_tls_12_session_is_renegotiated_by_its_timer_alone() {
         "the idle session was renegotiated"
     );
     reader.abort();
+}
+
+#[tokio::test]
+async fn a_tls_13_session_is_updated_and_the_peer_answers() {
+    // The client's key update is due at 50 ms. Its request goes out with its next write, and the
+    // server answers it when it reads the request.
+    let client = backend(fixture!("client.pem"), fixture!("client.key"), None, true)
+        .with_key_update(Some(Duration::from_millis(50)));
+    let server = backend(fixture!("server.pem"), fixture!("server.key"), None, true);
+    let (mut client_stream, mut server_stream) = session(&client, &server).await;
+    assert_eq!(
+        client_stream.key_updates().written(),
+        0,
+        "no update before the interval"
+    );
+
+    sleep(Duration::from_millis(100)).await;
+    let mut received = [0u8; 4];
+    let (written, read) = tokio::join!(
+        client_stream.write_all(b"ping"),
+        server_stream.read_exact(&mut received)
+    );
+    written.expect("the write");
+    read.expect("the read");
+    assert_eq!(&received, b"ping");
+    assert_eq!(
+        client_stream.key_updates().written(),
+        1,
+        "the client wrote its update"
+    );
+    assert_eq!(
+        server_stream.key_updates().requested_by_peer(),
+        1,
+        "the server received the request"
+    );
+
+    // The server's answer goes out with its next write, and the client reads it.
+    let mut answer = [0u8; 4];
+    let (written, read) = tokio::join!(
+        server_stream.write_all(b"pong"),
+        client_stream.read_exact(&mut answer)
+    );
+    written.expect("the write");
+    read.expect("the read");
+    assert_eq!(&answer, b"pong");
+    assert_eq!(
+        client_stream.key_updates().answered(),
+        1,
+        "the client received the answer"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_that_does_not_answer_a_key_update_ends_the_session_with_the_alarm() {
+    // The station's key update is due at 50 ms, and the peer never reads. The station's timer alone
+    // writes the KeyUpdate, and ends the session when no answer comes within 200 ms.
+    let (_silent, mut session, events) = station_with_peer(
+        SslVersion::TLS1_3,
+        SslOptions::empty(),
+        None,
+        Some(Duration::from_millis(50)),
+    )
+    .await;
+
+    let mut buffer = [0u8; 16];
+    let outcome = timeout(Duration::from_secs(10), session.read(&mut buffer))
+        .await
+        .expect("the station ends the session within 10 s");
+    assert!(outcome.is_err(), "the session ends");
+    assert_eq!(
+        events.seen(),
+        vec![
+            SecurityEvent::TlsHandshakeSuccess,
+            SecurityEvent::KeyUpdateExpired,
+        ],
+        "the handshake notice, then the alarm of an unanswered key update"
+    );
 }

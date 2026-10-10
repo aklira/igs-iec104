@@ -199,6 +199,23 @@ substituted time. The API names it `substituted`.
   `openssl_backend::tests::a_peer_that_does_not_answer_a_renegotiation_ends_the_session_with_the_alarm`,
   `openssl_backend::tests::an_idle_tls_12_session_is_renegotiated_by_its_timer_alone`.
 
+### D-016 — The time that a peer has to answer a KeyUpdate
+
+- **Decision**: a KeyUpdate that this side writes with `update_requested` must be answered within 30
+  seconds, counted from the write of the message (the same time as D-015). The answer is a KeyUpdate
+  with `update_not_requested` from the peer. A peer that does not answer in time ends the TLS 1.3
+  session, and the alarm TLS_NO_SK_UPDATE is raised. The next update is due one interval after the
+  answer.
+- **Sources**: 62351-3 clause 8.4 (the receiver of a KeyUpdate with `update_requested` answers with
+  `update_not_requested`; a side that does not receive the answer terminates the connection and raises
+  "alarm: session key update interval expired"). The clause gives no time. The fields of the message are
+  in RFC 8446, section 4.6.3. 104 §9.6 gives t0, with the default 30 s.
+- **Confidence**: medium. The standard leaves the time open, as for D-015. The default interval of 6
+  hours is the suggestion of clause 8.4, and it is data.
+- **Test**: `openssl_backend::tests::a_tls_13_session_is_updated_and_the_peer_answers`,
+  `openssl_backend::tests::a_peer_that_does_not_answer_a_key_update_ends_the_session_with_the_alarm`,
+  `settings::tests::the_key_update_interval_defaults_to_six_hours_and_must_not_be_zero`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |
