@@ -15,10 +15,11 @@
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use igs_iec104::client::{Client, ClientConfig, Event};
+use igs_iec104::clock;
 use igs_iec104::Delivery;
 use igs_iec104_codec::asdu::{Asdu, Body};
 use igs_iec104_codec::elements::{
@@ -597,77 +598,7 @@ fn stamp(wanted: bool) -> Outcome<Option<Cp56Time2a>> {
 
 /// The current time in UTC, as CP56Time2a (§7.6). Years 2000 to 2099 only.
 fn now_utc() -> Outcome<Cp56Time2a> {
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("the clock is before 1970: {error}"))?;
-    let millis = u16::try_from(since.subsec_millis()).map_err(|_| "the clock is not readable")?;
-    cp56_of_unix(since.as_secs(), millis)
-}
-
-/// The CP56Time2a of a Unix time in seconds, plus milliseconds, in UTC.
-fn cp56_of_unix(seconds: u64, millis: u16) -> Outcome<Cp56Time2a> {
-    const DAY: u64 = 86_400;
-    const DATE: &str = "the date is out of range";
-    let mut days = seconds / DAY;
-    let of_day = seconds % DAY;
-    // 1970-01-01 was a Thursday; CP56Time2a numbers the days from 1 (Monday) to 7 (Sunday).
-    let weekday = days.checked_add(3).ok_or(DATE)? % 7;
-    let day_of_week = u8::try_from(weekday)
-        .map_err(|_| DATE)?
-        .checked_add(1)
-        .ok_or(DATE)?;
-    let mut year = 1970u64;
-    loop {
-        let length = if is_leap(year) { 366 } else { 365 };
-        if days < length {
-            break;
-        }
-        days = days.checked_sub(length).ok_or(DATE)?;
-        year = year.checked_add(1).ok_or(DATE)?;
-    }
-    let mut month = 1u64;
-    loop {
-        let length = days_in_month(year, month);
-        if days < length {
-            break;
-        }
-        days = days.checked_sub(length).ok_or(DATE)?;
-        month = month.checked_add(1).ok_or(DATE)?;
-    }
-    if !(2000..=2099).contains(&year) {
-        return Err("the clock is outside the years 2000 to 2099 of CP56Time2a".to_string());
-    }
-    let day_of_month = days.checked_add(1).ok_or(DATE)?;
-    let hours = of_day / 3600;
-    let minutes = (of_day % 3600) / 60;
-    let seconds_of_minute = u16::try_from(of_day % 60).map_err(|_| DATE)?;
-    let milliseconds = seconds_of_minute
-        .checked_mul(1000)
-        .and_then(|value| value.checked_add(millis))
-        .ok_or(DATE)?;
-    Cp56Time2a::new(
-        milliseconds,
-        u8::try_from(minutes).map_err(|_| DATE)?,
-        u8::try_from(hours).map_err(|_| DATE)?,
-        u8::try_from(day_of_month).map_err(|_| DATE)?,
-        day_of_week,
-        u8::try_from(month).map_err(|_| DATE)?,
-        u8::try_from(year % 100).map_err(|_| DATE)?,
-    )
-    .ok_or_else(|| "the time is out of the range of CP56Time2a".to_string())
-}
-
-fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
-fn days_in_month(year: u64, month: u64) -> u64 {
-    match month {
-        2 if is_leap(year) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
+    clock::now_utc().map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -720,32 +651,5 @@ mod tests {
     fn an_answer_of_another_cause_is_not_judged() {
         let judge = judge_interrogation();
         assert!(judge(&interrogation_answer(cause::ACTIVATION, false)).is_none());
-    }
-
-    #[test]
-    fn a_unix_time_becomes_the_utc_cp56_time() {
-        // 2026-10-10 12:34:56 UTC, a Saturday.
-        let time = cp56_of_unix(1_791_635_696, 789).expect("in range");
-        assert_eq!(time.milliseconds(), 56_789);
-        assert_eq!(time.minutes(), 34);
-        assert_eq!(time.hours(), 12);
-        assert_eq!(time.day_of_month(), 10);
-        assert_eq!(time.day_of_week(), 6);
-        assert_eq!(time.month(), 10);
-        assert_eq!(time.year(), 26);
-    }
-
-    #[test]
-    fn leap_days_and_the_end_of_the_year_are_counted() {
-        let leap = cp56_of_unix(1_709_164_800, 0).expect("in range");
-        assert_eq!(
-            (leap.month(), leap.day_of_month(), leap.year()),
-            (2, 29, 24)
-        );
-        let last = cp56_of_unix(1_767_225_599, 0).expect("in range");
-        assert_eq!(
-            (last.month(), last.day_of_month(), last.year()),
-            (12, 31, 25)
-        );
     }
 }
