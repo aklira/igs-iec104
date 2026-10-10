@@ -22,6 +22,8 @@ arithmetic_side_effects = "deny"
 # rustls implements. Enabled by default.
 default = ["rustls"]
 rustls = ["dep:rustls", "dep:tokio-rustls"]
+# The OpenSSL backend (task X1, renegotiation). It needs the OpenSSL development files (libssl-dev).
+openssl = ["dep:openssl", "dep:tokio-openssl"]
 
 [dependencies]
 igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
@@ -37,6 +39,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # tokio-rustls adapts a rustls connection to tokio streams (task X1, approved by the maintainer).
 # Its default provider is aws-lc-rs, which is left out: the ring provider above is used.
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"], optional = true }
+# openssl binds the OpenSSL library (task X1, approved by the maintainer). Apache-2.0.
+openssl = { version = "0.10", optional = true }
+# tokio-openssl adapts an OpenSSL stream to tokio (task X1, approved by the maintainer). MIT/Apache-2.0.
+tokio-openssl = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # test-util gives tokio::time::pause (approved for T1, see docs/ai-log/T1.md).

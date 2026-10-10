@@ -24,8 +24,8 @@ All notable changes to this project are recorded in this file. The format follow
 
 ### Known gaps
 
-- The OpenSSL backend of TLS (optional feature) is not implemented yet. The rustls backend does
-  not offer every mandatory item of the conformance tables (see `docs/ai-log/X1.md`).
+- TLS has two backends: rustls (default) and OpenSSL (feature `openssl`). Neither offers TLS 1.2
+  renegotiation yet (see `docs/ai-log/X1.md`, Q-028).
 - The demo station `igs104-server` serves a built-in set of points, or the points of a TOML file given
   with `--points`.
 - The interop, load and switchover tests under load are not done.

@@ -81,6 +81,15 @@ cat root.pem extra2.pem extra3.pem extra4.pem extra5.pem > roots.pem
 leaf server "localhost" serverAuth "DNS:localhost,IP:127.0.0.1" -days 3650
 leaf client "igs-client" clientAuth "" -days 3650
 
+# An RSA server certificate: the static RSA and DHE-RSA suites of TLS 1.2 (table 9 of clause 10.5.1)
+# need an RSA key, which the EC leaves above do not have.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out rsa_server.key 2>/dev/null
+openssl req -new -key rsa_server.key -subj "/CN=localhost" -out rsa_server.csr
+printf "%s\n" "basicConstraints=CA:FALSE" "keyUsage=critical,digitalSignature,keyEncipherment" \
+    "extendedKeyUsage=serverAuth" "subjectAltName=DNS:localhost,IP:127.0.0.1" > rsa_server.ext
+openssl ca -config ca.cnf -batch -notext -in rsa_server.csr -out rsa_server.pem \
+    -extfile rsa_server.ext -days 3650 2>/dev/null
+
 # A client certificate from a root that the station does not trust.
 root rogue "igs-iec104 rogue root"
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out rogue_client.key 2>/dev/null
@@ -112,11 +121,11 @@ if [ "$size" -le 8192 ]; then
 fi
 
 # The files that the tests read. Each one is checked against the test root before it is copied.
-openssl verify -CAfile roots.pem server.pem client.pem big_server.pem >/dev/null
-for name in server client big_server revoked_client expired_client rogue_client; do
+openssl verify -CAfile roots.pem server.pem client.pem big_server.pem rsa_server.pem >/dev/null
+for name in server client big_server rsa_server revoked_client expired_client rogue_client; do
     cp "$name.pem" "$here/"
 done
-for name in server client big_server rogue_client expired_client revoked_client; do
+for name in server client big_server rsa_server rogue_client expired_client revoked_client; do
     cp "$name.key" "$here/"
 done
 cp roots.pem crl.pem "$here/"
