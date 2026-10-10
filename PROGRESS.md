@@ -17,6 +17,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | C2 Information elements | Done, committed | log `docs/ai-log/C2.md`, decisions D-008 and D-009 in `PROVENANCE.md` |
 | C3 ASDU header | Done, committed | log `docs/ai-log/C3.md`, typed errors in `error.rs` |
 | C4 ASDU bodies | Done, committed | log `docs/ai-log/C4.md`, decision D-010 in `PROVENANCE.md`, open questions Q-001 and Q-002 in `QUESTIONS.md` |
+| C5 APCI framing | Done, committed | log `docs/ai-log/C5.md`, decision D-011 in `PROVENANCE.md` |
 
 ## Decisions taken (beyond the plan)
 
@@ -54,8 +55,9 @@ decisions:
   Podman). It pins FledgePower v1.2.4 by digest and starts each peer with
   `bench/peer/bootstrap.sh` (one service per container).
 
-- The ASDU body is the `asdu` module: `Asdu::decode` and `validate_profile`. The
-  element errors are typed (`DecodeError::InvalidElement`, `Truncated`). C5 (APCI
-  framing) is the next codec task: it depends on C4, which is done.
+- APCI and framing: the `apci` module (`Apdu`, `FrameDecoder`). The control
+  bit positions come from the figure text in the raw pages of §5 (see C5), so a
+  maintainer should check figures 6 to 8 against the PDF.
+- C6 (property tests) is the next codec task. C7 (fuzzing) is a human gate.
 - The generated profile is ready. `object_size_bits(125) == None` is handled by
   the `FileSegment` value (length from LOS, see C4).

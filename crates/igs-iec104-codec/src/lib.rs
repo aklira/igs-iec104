@@ -34,3 +34,6 @@ pub mod error;
 
 /// ASDU body: information objects by type identification, and the profile rules.
 pub mod asdu;
+
+/// APCI and framing: the I, S and U formats and the frame decoder.
+pub mod apci;

@@ -19,6 +19,7 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
+use crate::apci::CONTROL_FIELD_OCTETS;
 use crate::error::{DecodeError, EncodeError};
 use crate::generated::profile::{TypeId, CAUSE_OF_TRANSMISSION_OCTS, MAX_APDU_LENGTH};
 use crate::header::{AsduHeader, CauseOfTransmission, CommonAddress, VariableStructure};
@@ -27,9 +28,6 @@ pub use body::Body;
 pub use objects::{InformationObject, Objects, MAX_OBJECTS};
 pub use profile::{validate_profile, validate_type, Direction, ProfileError};
 pub use wire::{FileSegment, Timed, Wire};
-
-/// Octets of the APCI control field, counted by the APDU length (104 §5).
-const CONTROL_FIELD_OCTETS: usize = 4;
 
 /// Largest ASDU, in octets. The APDU length field is at most 253 and counts the
 /// four control field octets, so the ASDU is at most 249 octets (104 §5 and
