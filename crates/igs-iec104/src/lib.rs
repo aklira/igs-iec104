@@ -10,7 +10,7 @@
 //! station (task S2), which answers them from its [`process_image`] (task S1); the
 //! [`clock`] gives the CP56Time2a of this machine.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 #![cfg_attr(
     test,

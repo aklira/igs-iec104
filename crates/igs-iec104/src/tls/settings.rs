@@ -8,12 +8,21 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::events::{SecurityEvent, SecurityEvents};
 use super::TlsError;
 
 /// The smallest certificate size that a conformant implementation handles (clause 6.4.2).
 pub const MIN_CERTIFICATE_SIZE: usize = 8192;
+
+/// The shortest interval between two renegotiations of a TLS 1.2 session (clause 7.4.5).
+pub const MIN_RENEGOTIATION: Duration = Duration::from_secs(10 * 60);
+/// The longest interval between two renegotiations: a long session is renegotiated at least once in
+/// 24 hours, to check the certificates (clause 7.4.5).
+pub const MAX_RENEGOTIATION: Duration = Duration::from_secs(24 * 60 * 60);
+/// The interval that the profile suggests (clause 7.4.5).
+pub const DEFAULT_RENEGOTIATION: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// The local identity: the certificate chain, the leaf first, and the private key. Both are DER.
 #[derive(Clone)]
@@ -93,6 +102,7 @@ pub struct TlsSettings {
     revocation: Vec<Vec<u8>>,
     tls13: bool,
     max_certificate_size: usize,
+    renegotiation: Option<Duration>,
     events: Arc<dyn SecurityEvents>,
 }
 
@@ -106,6 +116,7 @@ impl TlsSettings {
             revocation: Vec::new(),
             tls13: true,
             max_certificate_size: MIN_CERTIFICATE_SIZE,
+            renegotiation: Some(DEFAULT_RENEGOTIATION),
             events,
         }
     }
@@ -132,12 +143,28 @@ impl TlsSettings {
         self
     }
 
+    /// Sets the interval between two renegotiations of a TLS 1.2 session, or `None` for no
+    /// renegotiation. The profile allows 10 minutes to 24 hours and suggests 12 hours (clause
+    /// 7.4.5). The OpenSSL backend renegotiates; the rustls backend does not (see its module).
+    #[must_use]
+    pub fn with_renegotiation(mut self, interval: Option<Duration>) -> Self {
+        self.renegotiation = interval;
+        self
+    }
+
     /// Checks the settings against the profile. The backend calls it before it builds anything.
     pub fn validate(&self) -> Result<(), TlsError> {
         if self.max_certificate_size < MIN_CERTIFICATE_SIZE {
             return Err(TlsError::Invalid(format!(
                 "the certificate size limit must be at least {MIN_CERTIFICATE_SIZE} octets"
             )));
+        }
+        if let Some(interval) = self.renegotiation {
+            if !(MIN_RENEGOTIATION..=MAX_RENEGOTIATION).contains(&interval) {
+                return Err(TlsError::Invalid(
+                    "the renegotiation interval is 10 minutes to 24 hours".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -165,6 +192,11 @@ impl TlsSettings {
     /// The largest certificate that is handled, in octets.
     pub fn max_certificate_size(&self) -> usize {
         self.max_certificate_size
+    }
+
+    /// The interval between two renegotiations of a TLS 1.2 session, if any.
+    pub fn renegotiation(&self) -> Option<Duration> {
+        self.renegotiation
     }
 
     /// Where the security events go.

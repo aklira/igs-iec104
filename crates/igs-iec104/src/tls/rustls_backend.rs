@@ -8,7 +8,8 @@
 //!
 //! rustls has no TLS 1.0 or 1.1, no renegotiation, no static RSA key exchange, no finite-field
 //! DHE, no CCM and no NULL encryption. The conformance gaps that follow are recorded in
-//! `docs/ai-log/X1.md`. The connections are sans-I/O; the tokio stream comes with the transport.
+//! `docs/ai-log/X1.md`. The sans-I/O connections are the base of the tokio stream. The renegotiation interval of
+//! the settings is not applied by this backend: its sessions are not renegotiated.
 
 use std::fmt;
 use std::io;
