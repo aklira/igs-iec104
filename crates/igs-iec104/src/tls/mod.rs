@@ -28,6 +28,10 @@ pub mod rustls_backend;
 #[cfg(feature = "openssl")]
 pub mod openssl_backend;
 
+#[cfg(feature = "openssl")]
+#[allow(unsafe_code)]
+pub mod openssl_renegotiation;
+
 /// A TLS setting, certificate or handshake that the profile or the backend refuses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TlsError {
