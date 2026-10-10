@@ -384,7 +384,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | C3 ASDU header | [x] |
 | C4 ASDU bodies | [x] |
 | C5 APCI framing | [x] |
-| C6 Property tests | [ ] |
+| C6 Property tests | [x] |
 | C7 Fuzzing ⛔ | [ ] |
 | L1 Parameters | [ ] |
 | L2 State machine core | [ ] |

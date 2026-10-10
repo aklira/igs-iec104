@@ -18,6 +18,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | C3 ASDU header | Done, committed | log `docs/ai-log/C3.md`, typed errors in `error.rs` |
 | C4 ASDU bodies | Done, committed | log `docs/ai-log/C4.md`, decision D-010 in `PROVENANCE.md`, open questions Q-001 and Q-002 in `QUESTIONS.md` |
 | C5 APCI framing | Done, committed | log `docs/ai-log/C5.md`, decision D-011 in `PROVENANCE.md` |
+| C6 Property tests | Done, committed | log `docs/ai-log/C6.md`; `proptest` added as a dev-dependency (approved) |
 
 ## Decisions taken (beyond the plan)
 
@@ -58,6 +59,7 @@ decisions:
 - APCI and framing: the `apci` module (`Apdu`, `FrameDecoder`). The control
   bit positions come from the figure text in the raw pages of §5 (see C5), so a
   maintainer should check figures 6 to 8 against the PDF.
-- C6 (property tests) is the next codec task. C7 (fuzzing) is a human gate.
+- C7 (fuzzing) is a human gate and waits for a maintainer. The next task that
+  needs no gate is L1 (link parameters, depends on C5, which is done).
 - The generated profile is ready. `object_size_bits(125) == None` is handled by
   the `FileSegment` value (length from LOS, see C4).
