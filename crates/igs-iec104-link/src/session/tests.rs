@@ -89,7 +89,13 @@ fn started(base: Instant) -> Session {
         Event::Received(unnumbered(UnnumberedFunction::StartDtAct)),
         at(base, 0),
     );
-    assert_eq!(actions, vec![send_u(UnnumberedFunction::StartDtCon)]);
+    assert_eq!(
+        actions,
+        vec![
+            send_u(UnnumberedFunction::StartDtCon),
+            Action::Transfer(TransferState::Started),
+        ]
+    );
     assert_eq!(session.transfer(), TransferState::Started);
     session
 }
@@ -121,7 +127,13 @@ fn startdt_act_is_confirmed_and_starts_the_transfer() {
         unnumbered(UnnumberedFunction::StartDtAct),
         at(base, 1),
     );
-    assert_eq!(actions, vec![send_u(UnnumberedFunction::StartDtCon)]);
+    assert_eq!(
+        actions,
+        vec![
+            send_u(UnnumberedFunction::StartDtCon),
+            Action::Transfer(TransferState::Started),
+        ]
+    );
     assert_eq!(session.transfer(), TransferState::Started);
 }
 
@@ -192,7 +204,13 @@ fn stopdt_act_without_unconfirmed_frames_is_confirmed_at_once() {
         unnumbered(UnnumberedFunction::StopDtAct),
         at(base, 1),
     );
-    assert_eq!(actions, vec![send_u(UnnumberedFunction::StopDtCon)]);
+    assert_eq!(
+        actions,
+        vec![
+            send_u(UnnumberedFunction::StopDtCon),
+            Action::Transfer(TransferState::Stopped),
+        ]
+    );
     assert_eq!(session.transfer(), TransferState::Stopped);
 }
 
@@ -210,7 +228,11 @@ fn stopdt_act_confirms_the_received_frames_before_the_stop() {
     );
     assert_eq!(
         actions,
-        vec![send_s(1), send_u(UnnumberedFunction::StopDtCon)]
+        vec![
+            send_s(1),
+            send_u(UnnumberedFunction::StopDtCon),
+            Action::Transfer(TransferState::Stopped),
+        ]
     );
     assert_eq!(session.transfer(), TransferState::Stopped);
 }
@@ -233,9 +255,10 @@ fn stopdt_act_waits_for_the_acknowledgement_of_sent_frames() {
         unnumbered(UnnumberedFunction::StopDtAct),
         at(base, 2),
     );
-    assert!(
-        actions.is_empty(),
-        "no confirmation before the acknowledgement"
+    assert_eq!(
+        actions,
+        vec![Action::Transfer(TransferState::PendingUnconfirmedStop)],
+        "the state changes, and no confirmation is sent before the acknowledgement"
     );
     assert_eq!(session.transfer(), TransferState::PendingUnconfirmedStop);
 
@@ -246,7 +269,13 @@ fn stopdt_act_waits_for_the_acknowledgement_of_sent_frames() {
 
     // Then the second: the stop is confirmed.
     let confirmed = receive(&mut session, supervisory(2), at(base, 4));
-    assert_eq!(confirmed, vec![send_u(UnnumberedFunction::StopDtCon)]);
+    assert_eq!(
+        confirmed,
+        vec![
+            send_u(UnnumberedFunction::StopDtCon),
+            Action::Transfer(TransferState::Stopped)
+        ]
+    );
     assert_eq!(session.transfer(), TransferState::Stopped);
     assert_eq!(session.outstanding(), 0);
 }
@@ -464,6 +493,24 @@ fn a_window_that_crosses_the_wrap_is_full_after_k_frames() {
 }
 
 #[test]
+fn a_start_confirmation_and_an_i_frame_in_one_read_report_the_transfer_first() {
+    // The confirmation of STARTDT and the first I frame of the peer come in one read. The change
+    // is reported before the ASDU, so the application sees them in the order the peer sent them.
+    let base = Instant::now();
+    let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
+    session.handle(Event::StartDt, at(base, 0));
+    let mut frames = unnumbered(UnnumberedFunction::StartDtCon);
+    frames.extend(information(0, 0));
+    assert_eq!(
+        receive(&mut session, frames, at(base, 1)),
+        vec![
+            Action::Transfer(TransferState::Started),
+            Action::Deliver(asdu()),
+        ]
+    );
+}
+
+#[test]
 fn a_frame_split_at_every_byte_boundary_gives_the_same_actions() {
     let base = Instant::now();
     let frame = information(0, 0);
@@ -581,14 +628,19 @@ fn controlling_started(base: Instant) -> Session {
     let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     assert_eq!(
         session.handle(Event::StartDt, at(base, 0)),
-        vec![send_u(UnnumberedFunction::StartDtAct)]
+        vec![
+            send_u(UnnumberedFunction::StartDtAct),
+            Action::Transfer(TransferState::PendingStarted),
+        ]
     );
-    assert!(receive(
-        &mut session,
-        unnumbered(UnnumberedFunction::StartDtCon),
-        at(base, 0)
-    )
-    .is_empty());
+    assert_eq!(
+        receive(
+            &mut session,
+            unnumbered(UnnumberedFunction::StartDtCon),
+            at(base, 0)
+        ),
+        vec![Action::Transfer(TransferState::Started)]
+    );
     assert_eq!(session.transfer(), TransferState::Started);
     session
 }
@@ -599,15 +651,20 @@ fn controlling_start_sends_startdt_act_and_waits_for_the_confirmation() {
     let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     assert_eq!(
         session.handle(Event::StartDt, at(base, 1)),
-        vec![send_u(UnnumberedFunction::StartDtAct)]
+        vec![
+            send_u(UnnumberedFunction::StartDtAct),
+            Action::Transfer(TransferState::PendingStarted),
+        ]
     );
     assert_eq!(session.transfer(), TransferState::PendingStarted);
-    assert!(receive(
-        &mut session,
-        unnumbered(UnnumberedFunction::StartDtCon),
-        at(base, 2)
-    )
-    .is_empty());
+    assert_eq!(
+        receive(
+            &mut session,
+            unnumbered(UnnumberedFunction::StartDtCon),
+            at(base, 2)
+        ),
+        vec![Action::Transfer(TransferState::Started)]
+    );
     assert_eq!(session.transfer(), TransferState::Started);
 }
 
@@ -647,15 +704,20 @@ fn controlling_stop_without_unconfirmed_frames_waits_for_stopdt_con() {
     let mut session = controlling_started(base);
     assert_eq!(
         session.handle(Event::StopDt, at(base, 1)),
-        vec![send_u(UnnumberedFunction::StopDtAct)]
+        vec![
+            send_u(UnnumberedFunction::StopDtAct),
+            Action::Transfer(TransferState::PendingStopped)
+        ]
     );
     assert_eq!(session.transfer(), TransferState::PendingStopped);
-    assert!(receive(
-        &mut session,
-        unnumbered(UnnumberedFunction::StopDtCon),
-        at(base, 2)
-    )
-    .is_empty());
+    assert_eq!(
+        receive(
+            &mut session,
+            unnumbered(UnnumberedFunction::StopDtCon),
+            at(base, 2)
+        ),
+        vec![Action::Transfer(TransferState::Stopped)]
+    );
     assert_eq!(session.transfer(), TransferState::Stopped);
 }
 
@@ -666,11 +728,17 @@ fn controlling_stop_with_unconfirmed_sent_frames_waits_for_their_acknowledgement
     send(&mut session, asdu(), at(base, 1));
     assert_eq!(
         session.handle(Event::StopDt, at(base, 2)),
-        vec![send_u(UnnumberedFunction::StopDtAct)]
+        vec![
+            send_u(UnnumberedFunction::StopDtAct),
+            Action::Transfer(TransferState::PendingUnconfirmedStop)
+        ]
     );
     assert_eq!(session.transfer(), TransferState::PendingUnconfirmedStop);
     // The controlled station acknowledges the frame: the stop is awaited.
-    assert!(receive(&mut session, supervisory(1), at(base, 3)).is_empty());
+    assert_eq!(
+        receive(&mut session, supervisory(1), at(base, 3)),
+        vec![Action::Transfer(TransferState::PendingStopped)]
+    );
     assert_eq!(session.transfer(), TransferState::PendingStopped);
     assert_eq!(
         receive(
@@ -678,7 +746,7 @@ fn controlling_stop_with_unconfirmed_sent_frames_waits_for_their_acknowledgement
             unnumbered(UnnumberedFunction::StopDtCon),
             at(base, 4)
         ),
-        vec![]
+        vec![Action::Transfer(TransferState::Stopped)]
     );
     assert_eq!(session.transfer(), TransferState::Stopped);
 }
@@ -693,7 +761,11 @@ fn controlling_stop_confirms_the_received_frames_before_the_act() {
     );
     assert_eq!(
         session.handle(Event::StopDt, at(base, 2)),
-        vec![send_s(1), send_u(UnnumberedFunction::StopDtAct)]
+        vec![
+            send_s(1),
+            send_u(UnnumberedFunction::StopDtAct),
+            Action::Transfer(TransferState::PendingStopped)
+        ]
     );
     assert_eq!(session.transfer(), TransferState::PendingStopped);
 }
@@ -730,7 +802,11 @@ fn an_i_frame_that_acknowledges_the_last_sent_frame_moves_to_pending_stopped() {
     // The peer's I frame carries N(R) = 1: our only frame is acknowledged.
     assert_eq!(
         receive(&mut session, information(0, 1), at(base, 3)),
-        vec![Action::Deliver(asdu()), send_s(1)]
+        vec![
+            Action::Deliver(asdu()),
+            Action::Transfer(TransferState::PendingStopped),
+            send_s(1),
+        ]
     );
     assert_eq!(session.transfer(), TransferState::PendingStopped);
 }

@@ -75,7 +75,10 @@ fn t1_expires_for_a_start_act_without_its_confirmation() {
     let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
     assert_eq!(
         session.handle(Event::StartDt, at(base, 0)),
-        vec![send_u(UnnumberedFunction::StartDtAct)]
+        vec![
+            send_u(UnnumberedFunction::StartDtAct),
+            Action::Transfer(TransferState::PendingStarted),
+        ]
     );
     assert!(session.handle(Event::Tick, at(base, 14)).is_empty());
     assert_eq!(
@@ -90,7 +93,10 @@ fn t1_expires_for_a_stop_act_without_its_confirmation() {
     let mut session = controlling_started(base);
     assert_eq!(
         session.handle(Event::StopDt, at(base, 1)),
-        vec![send_u(UnnumberedFunction::StopDtAct)]
+        vec![
+            send_u(UnnumberedFunction::StopDtAct),
+            Action::Transfer(TransferState::PendingStopped)
+        ]
     );
     assert_eq!(session.transfer(), TransferState::PendingStopped);
     assert!(session.handle(Event::Tick, at(base, 15)).is_empty());

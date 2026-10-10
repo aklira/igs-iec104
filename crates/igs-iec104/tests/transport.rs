@@ -269,6 +269,41 @@ async fn an_asdu_the_peer_does_not_acknowledge_is_returned_when_the_connection_e
     assert!(matches!(result, Err(TransportError::PeerClosed)));
 }
 
+/// The transfer change comes before the ASDUs of the same read, in the order the peer sent them:
+/// the confirmation of STARTDT and the first I frame are written together, so they are read together.
+#[tokio::test(start_paused = true)]
+async fn the_transfer_change_is_reported_before_the_asdus_of_the_same_read() {
+    let mut link = start(controlling());
+    link.commands
+        .send(Command::StartDt)
+        .await
+        .expect("the driver runs");
+    assert_eq!(read_frame(&mut link.peer).await, STARTDT_ACT);
+    assert_eq!(
+        link.deliveries.recv().await,
+        Some(Delivery::Transfer(TransferState::PendingStarted))
+    );
+
+    let frame = Apdu::Information {
+        send: SequenceNumber::ZERO,
+        receive: SequenceNumber::ZERO,
+        asdu: asdu(),
+    }
+    .to_vec()
+    .expect("the sample encodes");
+    let mut bytes = STARTDT_CON.to_vec();
+    bytes.extend_from_slice(&frame);
+    link.peer.write_all(&bytes).await.expect("the peer writes");
+
+    assert_eq!(
+        link.deliveries.recv().await,
+        Some(Delivery::Transfer(TransferState::Started))
+    );
+    assert_eq!(link.deliveries.recv().await, Some(Delivery::Asdu(asdu())));
+    drop(link.commands);
+    assert!(link.task.await.expect("the task does not panic").is_ok());
+}
+
 #[tokio::test]
 async fn a_tcp_loopback_carries_a_start_and_an_asdu() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");

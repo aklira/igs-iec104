@@ -135,6 +135,9 @@ pub enum Action {
     Deliver(Asdu),
     /// A user request was not carried out.
     Rejected(Rejection),
+    /// The transfer state changed to this state (§5.3). It follows the frames of the transition,
+    /// so the application sees the change in order with the ASDUs that come after it.
+    Transfer(TransferState),
     /// Close the connection. The session accepts no more events after it.
     Close(CloseReason),
 }
@@ -366,12 +369,21 @@ impl Session {
         }
         match self.config.role() {
             Role::Controlled => {
-                self.transfer = TransferState::Stopped;
                 out.push(Action::Send(Apdu::Unnumbered(
                     UnnumberedFunction::StopDtCon,
                 )));
+                self.set_transfer(TransferState::Stopped, out);
             }
-            Role::Controlling => self.transfer = TransferState::PendingStopped,
+            Role::Controlling => self.set_transfer(TransferState::PendingStopped, out),
+        }
+    }
+
+    /// Sets the transfer state. A change is reported as an action, after the frames of the same
+    /// transition, so that it stays in order with the ASDUs of the same read.
+    fn set_transfer(&mut self, state: TransferState, out: &mut Vec<Action>) {
+        if self.transfer != state {
+            self.transfer = state;
+            out.push(Action::Transfer(state));
         }
     }
 
@@ -412,24 +424,24 @@ impl Session {
         match (self.config.role(), function, self.transfer) {
             // Figure 17: the controlled station starts and stops.
             (Role::Controlled, UnnumberedFunction::StartDtAct, TransferState::Stopped) => {
-                self.transfer = TransferState::Started;
                 out.push(Action::Send(Apdu::Unnumbered(
                     UnnumberedFunction::StartDtCon,
                 )));
+                self.set_transfer(TransferState::Started, out);
             }
             (Role::Controlled, UnnumberedFunction::StopDtAct, TransferState::Started) => {
                 self.controlled_stop(out);
             }
             // Figure 18: the controlling station is confirmed.
             (Role::Controlling, UnnumberedFunction::StartDtCon, TransferState::PendingStarted) => {
-                self.transfer = TransferState::Started;
+                self.set_transfer(TransferState::Started, out);
             }
             (
                 Role::Controlling,
                 UnnumberedFunction::StopDtCon,
                 TransferState::PendingStopped | TransferState::PendingUnconfirmedStop,
             ) => {
-                self.transfer = TransferState::Stopped;
+                self.set_transfer(TransferState::Stopped, out);
             }
             // Any other U frame leaves the state unchanged (figures 17 and 18).
             _ => {}
@@ -444,12 +456,12 @@ impl Session {
             self.send_supervisory(out);
         }
         if self.outstanding() > 0 {
-            self.transfer = TransferState::PendingUnconfirmedStop;
+            self.set_transfer(TransferState::PendingUnconfirmedStop, out);
         } else {
-            self.transfer = TransferState::Stopped;
             out.push(Action::Send(Apdu::Unnumbered(
                 UnnumberedFunction::StopDtCon,
             )));
+            self.set_transfer(TransferState::Stopped, out);
         }
     }
 
@@ -488,11 +500,12 @@ impl Session {
             }
             // Figure 18: Start connection / send STARTDT act.
             (Role::Controlling, Request::StartDt, TransferState::Stopped) => {
-                self.transfer = TransferState::PendingStarted;
                 self.arm_t1(now);
-                vec![Action::Send(Apdu::Unnumbered(
+                let mut actions = vec![Action::Send(Apdu::Unnumbered(
                     UnnumberedFunction::StartDtAct,
-                ))]
+                ))];
+                self.set_transfer(TransferState::PendingStarted, &mut actions);
+                actions
             }
             // Figure 18: Stop connection / send STOPDT act. The frames received
             // are confirmed first (§5.3), then the act is sent.
@@ -505,11 +518,12 @@ impl Session {
                 actions.push(Action::Send(Apdu::Unnumbered(
                     UnnumberedFunction::StopDtAct,
                 )));
-                self.transfer = if self.outstanding() > 0 {
+                let pending = if self.outstanding() > 0 {
                     TransferState::PendingUnconfirmedStop
                 } else {
                     TransferState::PendingStopped
                 };
+                self.set_transfer(pending, &mut actions);
                 actions
             }
             (Role::Controlling, _, state) => {
