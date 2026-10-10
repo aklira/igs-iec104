@@ -88,6 +88,24 @@ impl Link {
         self.deliveries.try_recv().ok()
     }
 
+    /// Waits, within `within`, for the connection to end on its own, and returns
+    /// the error it ended with. Fails when it ends cleanly or does not end.
+    pub async fn closed_by_itself(self, within: Duration) -> Result<TransportError, Failure> {
+        // The commands stay alive until the wait is over: dropping them would end
+        // the connection cleanly.
+        let Self { commands, task, .. } = self;
+        let outcome = timeout(within, task).await;
+        drop(commands);
+        match outcome {
+            Err(_) => {
+                Err(format!("the connection did not end within {} s", within.as_secs()).into())
+            }
+            Ok(Ok(Ok(()))) => Err("the connection ended cleanly, without an error".into()),
+            Ok(Ok(Err(error))) => Ok(error),
+            Ok(Err(error)) => Err(format!("the connection task failed: {error}").into()),
+        }
+    }
+
     /// True once the connection has ended, whatever the reason.
     pub fn ended(&self) -> bool {
         self.task.is_finished()

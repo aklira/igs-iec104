@@ -38,29 +38,6 @@ MODULUS = 32768
 pytestmark = pytest.mark.usefixtures("probe_binary")
 
 
-@pytest.fixture(scope="module")
-def probe_binary():
-    return probe.build()
-
-
-@pytest.fixture
-def bench_for(request):
-    """Makes benches for one test; each is torn down at the end of the test."""
-    benches: list[Bench] = []
-
-    def make(env: dict[str, str] | None = None) -> Bench:
-        capture.CAPTURE_DIR.mkdir(exist_ok=True)
-        name = f"{request.node.name}-{time.strftime('%Y%m%dT%H%M%S')}.pcap"
-        instance = Bench(name, env=env)
-        instance.down()
-        benches.append(instance)
-        return instance
-
-    yield make
-    for instance in benches:
-        instance.down()
-
-
 def _run_probe(bench: Bench, scenario: str, address: str) -> None:
     result = bench.exec("probe", PROBE_BIN, scenario, address, timeout=300, check=False)
     assert result.returncode == 0, f"{scenario} failed:\n{result.stdout}{result.stderr}"

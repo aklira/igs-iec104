@@ -8,14 +8,14 @@ import time
 
 import pytest
 
-from igs_bench.capture import CAPTURE_DIR
+from igs_bench import capture, probe
 from igs_bench.compose import Bench
 
 
 @pytest.fixture
 def bench(request):
     """A fresh bench per scenario; the capture is kept in bench/captures/."""
-    CAPTURE_DIR.mkdir(exist_ok=True)
+    capture.CAPTURE_DIR.mkdir(exist_ok=True)
     name = f"{request.node.name}-{time.strftime('%Y%m%dT%H%M%S')}.pcap"
     instance = Bench(name)
     instance.down()
@@ -23,3 +23,28 @@ def bench(request):
         yield instance
     finally:
         instance.down()
+
+
+@pytest.fixture
+def bench_for(request):
+    """Makes benches for one test; each is torn down at the end of the test."""
+    benches: list[Bench] = []
+
+    def make(env: dict[str, str] | None = None) -> Bench:
+        capture.CAPTURE_DIR.mkdir(exist_ok=True)
+        name = f"{request.node.name}-{time.strftime('%Y%m%dT%H%M%S')}.pcap"
+        instance = Bench(name, env=env)
+        instance.down()
+        benches.append(instance)
+        return instance
+
+    yield make
+    for instance in benches:
+        instance.down()
+
+
+@pytest.fixture(scope="session")
+def probe_binary():
+    """The static L4/L5 probe, built once per session into bench/bin."""
+    return probe.build()
+
