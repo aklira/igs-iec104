@@ -15,14 +15,17 @@ All notable changes to this project are recorded in this file. The format follow
 - `igs-iec104`: the async client `Client`, with reconnection and the procedures of clause 7; the
   async controlled station `Server`, with its process image and its answers to the procedures; the
   redundancy groups on both sides (`RedundantClient` and the redundant controlled station).
+- TLS (IEC 62351-3) over rustls, as the default feature: the client and server options, the
+  security events of Annex A, and the profile of the conformance tables.
 - Binaries `igs104-client`, a command-line controlling station, and `igs104-server`, a demo
   controlled station with simulated points.
-- Examples `client`, `server` and `redundancy`.
+- Examples `client`, `server`, `redundancy` and `tls`.
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
 ### Known gaps
 
-- TLS (IEC 62351-3) is not implemented yet.
+- The OpenSSL backend of TLS (optional feature) is not implemented yet. The rustls backend does
+  not offer every mandatory item of the conformance tables (see `docs/ai-log/X1.md`).
 - `igs104-server` serves a built-in set of points; reading them from a TOML file is not available.
 - The interop, load and switchover tests under load are not done.
 
