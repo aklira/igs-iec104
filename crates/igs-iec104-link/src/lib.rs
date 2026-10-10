@@ -5,7 +5,8 @@
 //! Sans-I/O APCI session state machine for IEC 60870-5-104.
 //!
 //! Takes events (bytes received, current instant, user requests) and returns
-//! actions (frames to send, ASDUs to deliver, next wake-up time, close).
+//! actions (frames to send, ASDUs to deliver, rejections, close). The caller asks
+//! `next_deadline` when the next timer is due.
 //! See IMPLEMENTATION.md section 2.
 
 #![forbid(unsafe_code)]

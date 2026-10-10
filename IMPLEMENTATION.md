@@ -390,7 +390,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | L2 State machine core | [x] |
 | L3 Timers and tests | [x] |
 | L4 Interop APCI ⛔ | [ ] |
-| T1 Transport | [ ] |
+| T1 Transport | [x] |
 | T2 Client API | [ ] |
 | T3 `igs104-client` binary | [ ] |
 | T4 Client interop matrix ⛔ | [ ] |
