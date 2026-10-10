@@ -13,8 +13,9 @@
     clippy::arithmetic_side_effects
 )]
 
-use std::net::{SocketAddr, TcpListener};
-use std::process::{Child, Command as Process, Stdio};
+use std::io::{BufRead, BufReader};
+use std::net::SocketAddr;
+use std::process::{Child, ChildStdout, Command as Process, Stdio};
 use std::time::Duration;
 
 use igs_iec104::client::{Client, ClientConfig, Event};
@@ -27,18 +28,12 @@ use tokio::time::{sleep, timeout};
 
 const STATION: u16 = 1;
 
-/// A port nothing listens on, found by binding and releasing it.
-fn free_port() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
-    let address = listener.local_addr().expect("has an address");
-    drop(listener);
-    address
-}
-
-/// The demo station as a child process, stopped when the guard is dropped.
+/// The demo station as a child process, stopped when the guard is dropped. Its standard output stays
+/// open, so that the station can print after the line that gives its address.
 struct Station {
     child: Child,
     address: SocketAddr,
+    _output: BufReader<ChildStdout>,
 }
 
 impl Drop for Station {
@@ -48,42 +43,44 @@ impl Drop for Station {
     }
 }
 
-/// Starts the station with `extra` options, after its address, its common address and its duration.
+/// Starts the station with `extra` options, after its common address and its duration. The station
+/// binds port 0 and reports the address it got, so two stations never race for one free port.
 fn start_station_with(seconds: u64, extra: &[&str]) -> Station {
-    let address = free_port();
-    let child = Process::new(env!("CARGO_BIN_EXE_igs104-server"))
+    let mut child = Process::new(env!("CARGO_BIN_EXE_igs104-server"))
         .args([
             "--bind",
-            &address.to_string(),
+            "127.0.0.1:0",
             "-c",
             &STATION.to_string(),
             "--for",
             &seconds.to_string(),
         ])
         .args(extra)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .expect("the server starts");
-    Station { child, address }
+    let output = child.stdout.take().expect("the standard output is piped");
+    let mut output = BufReader::new(output);
+    let mut line = String::new();
+    output
+        .read_line(&mut line)
+        .expect("the station reports its address");
+    // The line is "igs104-server: station N on ADDRESS".
+    let address: SocketAddr = line
+        .split_whitespace()
+        .last()
+        .and_then(|text| text.parse().ok())
+        .expect("the station reports its address");
+    Station {
+        child,
+        address,
+        _output: output,
+    }
 }
 
 fn start_station(seconds: u64) -> Station {
-    let address = free_port();
-    let child = Process::new(env!("CARGO_BIN_EXE_igs104-server"))
-        .args([
-            "--bind",
-            &address.to_string(),
-            "-c",
-            &STATION.to_string(),
-            "--for",
-            &seconds.to_string(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("the server starts");
-    Station { child, address }
+    start_station_with(seconds, &[])
 }
 
 /// Connects to the station, once it listens, and starts the data transfer.
