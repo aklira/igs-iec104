@@ -151,6 +151,20 @@ substituted time. The API names it `substituted`.
 - **Test**: `config::tests::window_above_two_thirds_of_k_is_a_recommendation_not_an_error`,
   `config::tests::t3_above_48_hours_is_a_recommendation_not_an_error`.
 
+### D-013 — Errors that end the connection
+
+- **Decision**: three errors close the connection rather than being tolerated: an N(R) that
+  acknowledges frames never sent, an I frame whose N(S) is not the next number expected, and an
+  ASDU or frame that cannot be decoded. The session then accepts no further event.
+- **Sources**: 104 §5.1 defines the valid acknowledgement and the sequence numbers, and is silent
+  on an invalid one (QUESTIONS.md Q-003, Q-005). 101 §7.2.6 says an ASDU with undefined values is
+  discarded, which would keep the connection (Q-006). The prepared text gives no other rule.
+- **Confidence**: medium. The standard is silent or differs, and the maintainer chose the
+  conservative reaction: a connection in doubt is closed, and the peer reconnects.
+- **Test**: `session::tests::an_acknowledgement_of_frames_never_sent_closes_the_connection`,
+  `session::tests::an_i_frame_with_an_unexpected_send_number_closes_the_connection`,
+  `session::tests::a_frame_that_cannot_be_decoded_closes_the_connection`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |
