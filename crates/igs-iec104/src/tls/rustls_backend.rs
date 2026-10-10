@@ -11,6 +11,7 @@
 //! `docs/ai-log/X1.md`. The connections are sans-I/O; the tokio stream comes with the transport.
 
 use std::fmt;
+use std::io;
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -29,10 +30,14 @@ use rustls::{
     SupportedProtocolVersion,
 };
 
+use tokio::net::TcpStream;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
+
 use super::events::{SecurityEvent, SecurityEvents};
 use super::profile;
 use super::settings::{Identity, TlsSettings, TrustAnchors};
-use super::TlsError;
+use super::{Handshake, TlsBackend, TlsError};
+use crate::transport::BoxedTransport;
 
 /// The client and server configurations of one station, built from its settings.
 pub struct RustlsBackend {
@@ -113,6 +118,49 @@ impl RustlsBackend {
     /// The security events of this backend.
     pub fn events(&self) -> &Arc<dyn SecurityEvents> {
         &self.events
+    }
+}
+
+impl TlsBackend for RustlsBackend {
+    fn connect<'a>(&'a self, tcp: TcpStream, host: &'a str) -> Handshake<'a> {
+        Box::pin(async move {
+            let name = ServerName::try_from(host)
+                .map_err(|error| TlsError::Invalid(format!("the host {host}: {error}")))?
+                .to_owned();
+            let connector = TlsConnector::from(Arc::clone(&self.client));
+            let stream = connector
+                .connect(name, tcp)
+                .await
+                .map_err(|error| self.handshake_error(&error))?;
+            raise_handshake_success(self.events.as_ref());
+            Ok(Box::new(stream) as BoxedTransport)
+        })
+    }
+
+    fn accept<'a>(&'a self, tcp: TcpStream) -> Handshake<'a> {
+        Box::pin(async move {
+            let acceptor = TlsAcceptor::from(Arc::clone(&self.server));
+            let stream = acceptor
+                .accept(tcp)
+                .await
+                .map_err(|error| self.handshake_error(&error))?;
+            raise_handshake_success(self.events.as_ref());
+            Ok(Box::new(stream) as BoxedTransport)
+        })
+    }
+}
+
+impl RustlsBackend {
+    /// Maps an error of the tokio handshake to the events of the profile. A failure of the
+    /// TCP stream itself raises nothing; it is a plain transport error.
+    fn handshake_error(&self, error: &io::Error) -> TlsError {
+        if let Some(rustls_error) = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<RustlsError>())
+        {
+            raise_handshake_failure(self.events.as_ref(), rustls_error);
+        }
+        TlsError::Handshake(error.to_string())
     }
 }
 

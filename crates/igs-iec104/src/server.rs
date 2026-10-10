@@ -31,13 +31,14 @@ use igs_iec104_codec::elements::Coi;
 use igs_iec104_codec::formats::Cp56Time2a;
 use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
 use igs_iec104_link::{ConfigError, LinkConfig, Parameters, Rejection, Role, TransferState};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Notify};
 use tokio::time;
 
 use crate::clock;
 use crate::process_image::{PointValue, ProcessError, ProcessImage, Update};
-use crate::transport::{run, Command, Delivery, Transport};
+use crate::tls::Secure;
+use crate::transport::{run, secure_server, Command, Delivery, Transport};
 
 pub mod respond;
 
@@ -71,9 +72,18 @@ pub struct ServerConfig {
     pub selection_timeout: Duration,
     /// The number of spontaneous events the station queues while no connection takes them.
     pub event_capacity: NonZeroUsize,
+    /// The TLS backend of the connections (task X1), or `None` for plain TCP.
+    pub tls: Option<Secure>,
 }
 
 impl ServerConfig {
+    /// Secures the connections with `backend` (task X1). The client certificate is required.
+    #[must_use]
+    pub fn with_tls(mut self, backend: Secure) -> Self {
+        self.tls = Some(backend);
+        self
+    }
+
     /// A configuration that listens on `bind` for the station `common_address`, with the
     /// default parameters, a local power switch on, a 30 s selection time-out and room for
     /// 1024 spontaneous events.
@@ -85,6 +95,7 @@ impl ServerConfig {
             initialization_cause: 0,
             selection_timeout: DEFAULT_SELECTION_TIMEOUT,
             event_capacity: NonZeroUsize::new(DEFAULT_EVENT_CAPACITY).unwrap_or(NonZeroUsize::MIN),
+            tls: None,
         }
     }
 }
@@ -208,6 +219,7 @@ struct Station<H> {
 pub struct Server<H: Handler> {
     listener: TcpListener,
     station: Arc<Station<H>>,
+    tls: Option<Secure>,
 }
 
 impl<H: Handler> Server<H> {
@@ -233,6 +245,7 @@ impl<H: Handler> Server<H> {
         });
         Ok(Self {
             listener,
+            tls: config.tls,
             station: Arc::new(Station {
                 process,
                 handler,
@@ -262,9 +275,18 @@ impl<H: Handler> Server<H> {
     pub async fn run(self) {
         loop {
             match self.listener.accept().await {
-                Ok((stream, _peer)) => {
-                    tokio::spawn(serve(stream, Arc::clone(&self.station)));
-                }
+                Ok((stream, _peer)) => match &self.tls {
+                    None => {
+                        tokio::spawn(serve(stream, Arc::clone(&self.station)));
+                    }
+                    Some(tls) => {
+                        tokio::spawn(serve_secured(
+                            tls.clone(),
+                            stream,
+                            Arc::clone(&self.station),
+                        ));
+                    }
+                },
                 Err(_) => time::sleep(ACCEPT_RETRY).await,
             }
         }
@@ -324,6 +346,15 @@ impl ServerHandle {
         lock(&self.process.group)
             .image
             .value(self.common_address, address)
+    }
+}
+
+/// Secures an accepted connection, then serves it. A failed handshake ends the connection; the
+/// handshake raises its security events.
+async fn serve_secured<H: Handler>(tls: Secure, stream: TcpStream, station: Arc<Station<H>>) {
+    let t0 = station.link.parameters().t0;
+    if let Ok(secured) = secure_server(&tls, stream, t0).await {
+        serve(secured, station).await;
     }
 }
 

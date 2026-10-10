@@ -27,7 +27,8 @@ use tokio::sync::mpsc;
 
 use crate::error::TransportError;
 use crate::procedures::{self, ProcedureError};
-use crate::transport::{connect, run_shared, Command, Delivery};
+use crate::tls::Secure;
+use crate::transport::{connect, run_shared, secure_client, BoxedTransport, Command, Delivery};
 
 /// How the client waits between two connection attempts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +48,16 @@ impl Default for ReconnectPolicy {
     }
 }
 
+/// The TLS options of a client (task X1): the backend, and the name that the certificate of the
+/// station must carry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientTls {
+    /// The backend that secures the connections.
+    pub backend: Secure,
+    /// The DNS name or the IP address of the station, as its certificate names it.
+    pub host: String,
+}
+
 /// The configuration of a client: the controlled station, its common address, the
 /// session parameters (the role is always controlling), the reconnect policy and
 /// the capacity of the channels.
@@ -60,6 +71,8 @@ pub struct ClientConfig {
     pub reconnect: ReconnectPolicy,
     /// The number of items each channel holds before its sender waits.
     pub capacity: usize,
+    /// The TLS options, or `None` for a plain TCP connection.
+    pub tls: Option<ClientTls>,
     link: LinkConfig,
 }
 
@@ -71,8 +84,20 @@ impl ClientConfig {
             common_address,
             reconnect: ReconnectPolicy::default(),
             capacity: 32,
+            tls: None,
             link: LinkConfig::with_defaults(Role::Controlling),
         }
+    }
+
+    /// Secures the connections with `backend` (task X1). `host` is the name the certificate of the
+    /// station must carry.
+    #[must_use]
+    pub fn with_tls(mut self, backend: Secure, host: impl Into<String>) -> Self {
+        self.tls = Some(ClientTls {
+            backend,
+            host: host.into(),
+        });
+        self
     }
 
     /// Replaces the session parameters, after their validation.
@@ -322,6 +347,15 @@ impl Client {
     }
 }
 
+/// Opens the connection to the station within t0, and secures it when the configuration asks for it.
+async fn open(config: &ClientConfig, t0: Duration) -> Result<BoxedTransport, TransportError> {
+    let tcp = connect(config.address, t0).await?;
+    match &config.tls {
+        None => Ok(Box::new(tcp) as BoxedTransport),
+        Some(tls) => secure_client(&tls.backend, tcp, &tls.host, t0).await,
+    }
+}
+
 /// Keeps one connection up, for as long as the client exists.
 async fn supervise(
     config: ClientConfig,
@@ -342,7 +376,7 @@ async fn supervise(
 
     let mut delay = config.reconnect.initial;
     loop {
-        match connect(config.address, t0).await {
+        match open(&config, t0).await {
             Ok(stream) => {
                 delay = config.reconnect.initial;
                 if events.send(Event::Connected).await.is_err() {
