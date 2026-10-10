@@ -819,3 +819,83 @@ fn the_window_parameter_is_the_one_of_the_configuration() {
 }
 
 mod timers;
+
+/// The ASDU of the I frame with number `n`: its interrogation qualifier is 20 + n, so the
+/// frames of one test can be told apart.
+fn numbered(n: u8) -> Asdu {
+    let qualifier = 20 + n;
+    Asdu::decode(&[
+        0x64, 0x01, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, qualifier,
+    ])
+    .expect("sample decodes")
+}
+
+#[test]
+fn the_asdus_of_unacknowledged_frames_are_kept_in_order_until_acknowledged() {
+    let base = Instant::now();
+    let mut session = started(base);
+    for n in 0..3 {
+        send(&mut session, numbered(n), at(base, 1));
+    }
+    assert_eq!(
+        session.unacknowledged(),
+        vec![numbered(0), numbered(1), numbered(2)]
+    );
+    // The peer acknowledges the first two: only the third is still unacknowledged.
+    receive(&mut session, supervisory(2), at(base, 2));
+    assert_eq!(session.unacknowledged(), vec![numbered(2)]);
+    assert_eq!(session.outstanding(), 1);
+}
+
+#[test]
+fn supersede_closes_a_started_connection_and_keeps_its_unacknowledged_asdus() {
+    let base = Instant::now();
+    let mut session = started(base);
+    send(&mut session, numbered(0), at(base, 1));
+    send(&mut session, numbered(1), at(base, 1));
+    let actions = session.handle(Event::Supersede, at(base, 2));
+    assert_eq!(actions, vec![Action::Close(CloseReason::Superseded)]);
+    assert!(session.is_closed());
+    assert_eq!(session.unacknowledged(), vec![numbered(0), numbered(1)]);
+}
+
+#[test]
+fn supersede_leaves_a_stopped_connection_open() {
+    let base = Instant::now();
+    let mut session = controlled(base);
+    assert!(session.handle(Event::Supersede, at(base, 1)).is_empty());
+    assert!(!session.is_closed());
+}
+
+#[test]
+fn supersede_closes_a_controlling_connection_that_is_starting_or_started() {
+    let base = Instant::now();
+    let mut starting = Session::new(LinkConfig::with_defaults(Role::Controlling), base);
+    starting.handle(Event::StartDt, at(base, 0));
+    assert_eq!(
+        starting.handle(Event::Supersede, at(base, 1)),
+        vec![Action::Close(CloseReason::Superseded)]
+    );
+    let mut running = controlling_started(base);
+    assert_eq!(
+        running.handle(Event::Supersede, at(base, 1)),
+        vec![Action::Close(CloseReason::Superseded)]
+    );
+}
+
+#[test]
+fn supersede_closes_a_controlled_connection_whose_stop_waits_for_acknowledgements() {
+    let base = Instant::now();
+    let mut session = started(base);
+    send(&mut session, numbered(0), at(base, 1));
+    receive(
+        &mut session,
+        unnumbered(UnnumberedFunction::StopDtAct),
+        at(base, 2),
+    );
+    assert_eq!(session.transfer(), TransferState::PendingUnconfirmedStop);
+    assert_eq!(
+        session.handle(Event::Supersede, at(base, 3)),
+        vec![Action::Close(CloseReason::Superseded)]
+    );
+}

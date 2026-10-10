@@ -46,6 +46,9 @@ pub enum Command {
     StartDt,
     /// Stop the data transfer (controlling station).
     StopDt,
+    /// Another connection of the redundancy group starts the data transfer: this
+    /// connection is closed unless it is stopped (§10.7).
+    Supersede,
 }
 
 /// What the connection tells the application.
@@ -58,6 +61,10 @@ pub enum Delivery {
     /// The state of the data transfer changed: `Started` once STARTDT con is received,
     /// `Stopped` once STOPDT con is received (figures 17 and 18).
     Transfer(TransferState),
+    /// The ASDUs sent on the connection and not acknowledged when it ended, oldest first.
+    /// They are delivered once, after the last I frame has been sent, before the connection
+    /// ends. A redundancy group sends them again on another connection (§10.5, §10.6).
+    Unacknowledged(Vec<Asdu>),
 }
 
 /// Opens a TCP connection to `address`, giving up after `t0` (§9.6).
@@ -104,6 +111,14 @@ pub async fn run_shared<S: Transport>(
 ) -> Result<(), TransportError> {
     let mut session = Session::new(config, now());
     let outcome = drive(&mut stream, &mut session, commands, deliveries).await;
+    // The ASDUs the peer did not acknowledge are handed back, whatever ended the connection.
+    let unacknowledged = session.unacknowledged();
+    if !unacknowledged.is_empty() {
+        // The application may have stopped listening: then nothing is left to recover.
+        let _ = deliveries
+            .send(Delivery::Unacknowledged(unacknowledged))
+            .await;
+    }
     // Nothing is left to recover when the shutdown fails: the peer is gone.
     let _ = stream.shutdown().await;
     outcome
@@ -180,6 +195,7 @@ fn event_of(command: Command) -> Event {
         Command::SendAsdu(asdu) => Event::SendAsdu(asdu),
         Command::StartDt => Event::StartDt,
         Command::StopDt => Event::StopDt,
+        Command::Supersede => Event::Supersede,
     }
 }
 

@@ -17,6 +17,7 @@
 //! The timers t1, t2 and t3 are in `timers`. They run on the instants given to
 //! `handle`, and `next_deadline` tells the caller when the next one is due.
 
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use igs_iec104_codec::apci::{
@@ -70,6 +71,9 @@ pub enum Event {
     StartDt,
     /// The user asks to stop the data transfer.
     StopDt,
+    /// Another connection of the redundancy group starts the data transfer: this one
+    /// is closed unless it is stopped (§10.7).
+    Supersede,
     /// Time passes: the timers due by now expire. An early tick does nothing.
     Tick,
 }
@@ -118,6 +122,8 @@ pub enum CloseReason {
     /// t1 expired while a frame, a start or stop act, or a test act was waiting
     /// for its confirmation (§5.1, §5.2).
     T1Expired,
+    /// Another connection of the redundancy group started the data transfer (§10.7).
+    Superseded,
 }
 
 /// What the session asks the caller to do.
@@ -148,6 +154,10 @@ pub struct Session {
     acknowledged: SequenceNumber,
     /// The N(R) last sent: every I frame of the peer before it is acknowledged.
     acknowledged_to_peer: SequenceNumber,
+    /// The ASDUs of the I frames sent and not yet acknowledged, oldest first. Their number
+    /// is `outstanding()`. A redundancy group sends them again on another connection when
+    /// this one is closed before they are acknowledged (§10.5, §10.6).
+    unacknowledged: VecDeque<Asdu>,
     last_received: Option<Instant>,
     /// t1: when the last frame or act sent expires, unless it is confirmed.
     t1_deadline: Option<Instant>,
@@ -178,6 +188,7 @@ impl Session {
             receive_state: SequenceNumber::ZERO,
             acknowledged: SequenceNumber::ZERO,
             acknowledged_to_peer: SequenceNumber::ZERO,
+            unacknowledged: VecDeque::new(),
             last_received: None,
             t1_deadline: None,
             t2_deadline: None,
@@ -201,6 +212,12 @@ impl Session {
         distance(self.acknowledged, self.send_state)
     }
 
+    /// The ASDUs of the I frames sent and not yet acknowledged, oldest first. The
+    /// caller sends them again on another connection after this one is closed.
+    pub fn unacknowledged(&self) -> Vec<Asdu> {
+        self.unacknowledged.iter().cloned().collect()
+    }
+
     /// The time of the last frame received, if any.
     pub fn last_received(&self) -> Option<Instant> {
         self.last_received
@@ -221,6 +238,7 @@ impl Session {
             Event::SendAsdu(asdu) => actions.push(self.send_asdu(asdu, now)),
             Event::StartDt => actions.extend(self.request(Request::StartDt, now)),
             Event::StopDt => actions.extend(self.request(Request::StopDt, now)),
+            Event::Supersede => self.supersede(&mut actions),
             Event::Tick => {}
         }
         self.sync_t1();
@@ -327,8 +345,13 @@ impl Session {
     /// sent. It is valid when it lies between the last acknowledged number and
     /// V(S) (§5.1).
     fn acknowledge(&mut self, receive: SequenceNumber) -> Result<(), CloseReason> {
-        if distance(self.acknowledged, receive) > self.outstanding() {
+        let count = distance(self.acknowledged, receive);
+        if count > self.outstanding() {
             return Err(CloseReason::InvalidReceiveSequence { receive });
+        }
+        // The frames acknowledged are the oldest ones sent: their ASDUs leave the queue.
+        for _ in 0..count {
+            self.unacknowledged.pop_front();
         }
         self.acknowledged = receive;
         Ok(())
@@ -437,6 +460,7 @@ impl Session {
         if self.outstanding() >= self.config.parameters().k {
             return Action::Rejected(Rejection::WindowFull(asdu));
         }
+        self.unacknowledged.push_back(asdu.clone());
         let frame = Apdu::Information {
             send: self.send_state,
             receive: self.receive_state,
@@ -491,6 +515,23 @@ impl Session {
             (Role::Controlling, _, state) => {
                 vec![Action::Rejected(Rejection::InvalidState { request, state })]
             }
+        }
+    }
+
+    /// Another connection of the redundancy group starts the data transfer, so this one
+    /// is closed (§10.7). Figure 36 closes a started controlled connection, and figure 37 a
+    /// started or starting controlling one. §10.7 also closes a controlled connection whose
+    /// stop is pending for its acknowledgements; figure 36 has no such arrow (Q-017). A
+    /// stopped connection is not closed.
+    fn supersede(&mut self, out: &mut Vec<Action>) {
+        let closes = matches!(
+            (self.config.role(), self.transfer),
+            (_, TransferState::Started)
+                | (Role::Controlling, TransferState::PendingStarted)
+                | (Role::Controlled, TransferState::PendingUnconfirmedStop)
+        );
+        if closes {
+            self.close(CloseReason::Superseded, out);
         }
     }
 
