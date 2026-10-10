@@ -22,6 +22,7 @@ FIELDS = (
     "_ws.col.info",
     "iec60870_asdu.typeid",
     "iec60870_asdu.causetx",
+    "iec60870_asdu.nega",
     "iec60870_104.tx",
     "iec60870_104.rx",
 )
@@ -41,6 +42,7 @@ class Frame:
     kind: str  # "I", "S", "U", or "" for a frame without APCI
     tx: int | None  # N(S) of an I frame
     rx: int | None  # N(R) of an I or S frame
+    negative: bool = False  # P/N of the ASDU of an I frame: a negative confirmation
 
 
 def _path(bench: Bench) -> str:
@@ -66,6 +68,7 @@ def decode(bench: Bench, service: str = "capture") -> list[Frame]:
         causes = iter(int(v) for v in layers.get("iec60870_asdu.causetx", []))
         txs = iter(int(v) for v in layers.get("iec60870_104.tx", []))
         rxs = iter(int(v) for v in layers.get("iec60870_104.rx", []))
+        negatives = iter(layers.get("iec60870_asdu.nega", []))
         for part in parts:
             match = _KIND.search(part)
             kind = match.group(1) if match else ""
@@ -82,6 +85,7 @@ def decode(bench: Bench, service: str = "capture") -> list[Frame]:
                         kind=kind,
                         tx=next(txs, None),
                         rx=next(rxs, None),
+                        negative=next(negatives, "0") in ("1", "True", "true"),
                     )
                 )
             elif kind == "S":

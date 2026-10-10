@@ -22,12 +22,13 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | C7 Fuzzing ⛔ | Partly done: harness committed, 10 min per target without crash; 24 h campaign pending (maintainer gate) | log `docs/ai-log/C7.md`; `libfuzzer-sys` and the `NCSA` licence approved |
 | L1 Parameters | Done, committed | log `docs/ai-log/L1.md`, decision D-012 in `PROVENANCE.md` (recommendations are warnings) |
 | L2 State machine core | Done, committed `c543252`: both roles follow figures 17 and 18 (figure 18 read from the PDF page 51); window, wrap-around and N(R) checks tested with a fake clock | log `docs/ai-log/L2.md`; open questions Q-007 and Q-008 in `QUESTIONS.md` |
-| L3 Timers and tests | Done, not committed: t1, t2 and t3 with fake-clock tests; `Session::new` takes the establishment instant and `next_deadline()` replaces a wake-up action | log `docs/ai-log/L3.md`; open questions Q-009 to Q-013 in `QUESTIONS.md` (figures 12 to 14 missing from the prepared text) |
-| T1 Transport | Done, not committed: async driver over `tokio::net::TcpStream` with t0 connect timeout, clean shutdown and typed errors; generic `Transport` bound for TLS; `Delivery::Transfer` reports the state of the data transfer | log `docs/ai-log/T1.md`; tests: 12 in `igs-iec104` (in memory on a paused clock, and TCP loopback) |
+| L3 Timers and tests | Done, committed `84d1546`: t1, t2 and t3 with fake-clock tests; `Session::new` takes the establishment instant and `next_deadline()` replaces a wake-up action | log `docs/ai-log/L3.md`; open questions Q-009 to Q-013 in `QUESTIONS.md` (figures 12 to 14 missing from the prepared text) |
+| T1 Transport | Done, committed `105d52d`: async driver over `tokio::net::TcpStream` with t0 connect timeout, clean shutdown and typed errors; generic `Transport` bound for TLS; `Delivery::Transfer` reports the state of the data transfer | log `docs/ai-log/T1.md`; tests: 12 in `igs-iec104` (in memory on a paused clock, and TCP loopback) |
 | L4 Interop APCI ⛔ | Done for the accepted scope, committed `40b95a9`: probe (`bench/probe`) and 8 scenarios pass in both directions; the wrap of N(S) is an accepted known gap (expected failure). Fault injection moved to L5 | log `docs/ai-log/L4.md`; bench tests `tests/test_l4_interop.py` |
 | L5 Fault injection interop | Done: APCI relay in the probe; nine scenarios pass in both directions (t1 expiry, late and dropped and duplicated frames) | log `docs/ai-log/L5.md`; bench tests `tests/test_l5_faults.py` |
-| T2 Client API | Done in the working tree, not committed: `Client` with reconnect policy, the procedures of §7 and an event stream; nine integration tests on loopback | log `docs/ai-log/T2.md`; tests `crates/igs-iec104/tests/client.rs` |
-| T3 `igs104-client` binary | Done in the working tree, not committed: clap CLI with ten subcommands; checked by hand against the reference server (`docs/ai-log/T3.md`) | log `docs/ai-log/T3.md`; date conversion unit tests in the binary |
+| T2 Client API | Done, committed `0056c04`: `Client` with reconnect policy, the procedures of §7 and an event stream; nine integration tests on loopback | log `docs/ai-log/T2.md`; tests `crates/igs-iec104/tests/client.rs` |
+| T3 `igs104-client` binary | Done, committed `c1bbba0`: clap CLI with eleven subcommands. Its manual check was wrong for negative confirmations; corrected in T4 | log `docs/ai-log/T3.md` (correction section); date and judgement unit tests in the binary |
+| T4 Client interop matrix ⛔ | Done, gate closed by the maintainer (option 1: the matrix is the exit of phase 3, known gaps recorded). 33 rows on the reference server; 5 are positive exchanges, 27 check the peer's refusal. Found and fixed the negative-confirmation defect in T3 | log `docs/ai-log/T4.md`; bench tests `bench/tests/test_t4_client_matrix.py` |
 
 ## Decisions taken (beyond the plan)
 
@@ -75,6 +76,10 @@ decisions:
 - L1 (parameters) is done: `LinkConfig` in `igs-iec104-link`.
 - L2 (state machine core) is committed. Q-003, Q-005 and Q-006 are decided (D-013: the
   connection closes). Q-007 and Q-008 stay open.
+- T4 (client matrix) is done; the maintainer chose option 1 at the gate. The positive command path, counter
+  interrogation and read against the reference server are known gaps (see `docs/ai-log/T4.md`). A bench
+  task for a control path would give positive commands before S5. The reference configuration gained a
+  clock synchronization (`time_sync`) and one command point per command type.
 - T1 (transport) is committed (`105d52d`). L4 (interop APCI) is done for the accepted scope,
   committed (`40b95a9`); the maintainer moved fault injection to L5, the next bench task.
 - L3 (timers) is committed (`84d1546`). Its questions Q-009 to Q-013

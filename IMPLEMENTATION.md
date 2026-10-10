@@ -403,7 +403,7 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | T1 Transport | [x] |
 | T2 Client API | [x] |
 | T3 `igs104-client` binary | [x] |
-| T4 Client interop matrix ⛔ | [ ] |
+| T4 Client interop matrix ⛔ | [x] |
 | S1 Process image | [ ] |
 | S2 Server | [ ] |
 | S3 Redundancy groups | [ ] |

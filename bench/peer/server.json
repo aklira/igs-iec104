@@ -24,7 +24,7 @@
           "ca_asdu_size": 2,
           "ioaddr_size": 3,
           "asdu_size": 0,
-          "time_sync": false,
+          "time_sync": true,
           "cmd_exec_timeout": 20,
           "cmd_recv_timeout": 60,
           "accept_cmd_with_time": 2,
@@ -40,7 +40,13 @@
         "version": "1.0",
         "datapoints": [
           { "label": "TS1", "protocols": [{ "name": "iec104", "address": "45-672", "typeid": "M_SP_NA_1" }] },
-          { "label": "TM1", "protocols": [{ "name": "iec104", "address": "45-984", "typeid": "M_ME_NA_1" }] }
+          { "label": "TM1", "protocols": [{ "name": "iec104", "address": "45-984", "typeid": "M_ME_NA_1" }] },
+          { "label": "CM1", "protocols": [{ "name": "iec104", "address": "45-10005", "typeid": "C_SC_NA_1", "termination_timeout": 3000 }] },
+          { "label": "CD1", "protocols": [{ "name": "iec104", "address": "45-10006", "typeid": "C_DC_NA_1", "termination_timeout": 3000 }] },
+          { "label": "CR1", "protocols": [{ "name": "iec104", "address": "45-10007", "typeid": "C_RC_NA_1", "termination_timeout": 3000 }] },
+          { "label": "CS1", "protocols": [{ "name": "iec104", "address": "45-10008", "typeid": "C_SE_NA_1", "termination_timeout": 3000 }] },
+          { "label": "CS2", "protocols": [{ "name": "iec104", "address": "45-10009", "typeid": "C_SE_NB_1", "termination_timeout": 3000 }] },
+          { "label": "CS3", "protocols": [{ "name": "iec104", "address": "45-10010", "typeid": "C_SE_NC_1", "termination_timeout": 3000 }] }
         ]
       }
     }
