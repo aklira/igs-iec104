@@ -23,3 +23,9 @@
 pub mod config;
 
 pub use config::{ConfigError, LinkConfig, Parameters, Recommendation, Role};
+
+/// The APCI session state machine: sequence numbers, window, acknowledgements and the
+/// start and stop of the data transfer (task L2), sans I/O.
+pub mod session;
+
+pub use session::{Action, CloseReason, Event, Rejection, Request, Session, TransferState};

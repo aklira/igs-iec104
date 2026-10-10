@@ -1,0 +1,463 @@
+// SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! The APCI session state machine (IEC 60870-5-104 §5.1, §5.2, §5.3), sans I/O.
+//!
+//! The session takes events (bytes received, an ASDU to send, a request to
+//! start or stop the data transfer, a tick) and returns actions (frames to
+//! send, ASDUs to deliver, closing the connection). It keeps the send and
+//! receive state variables, the window of k unacknowledged I frames, the
+//! acknowledgement after w received I frames, and the STARTDT and STOPDT states.
+//!
+//! The controlled station follows figure 17 and the controlling station
+//! follows figure 18 of §5.3. Where the text says more than the figure, the
+//! text is followed and recorded as a question (Q-008).
+//!
+//! The timers t1, t2 and t3 belong to the next task (L3): a tick does nothing
+//! here.
+
+use std::time::Instant;
+
+use igs_iec104_codec::apci::{
+    Apdu, FrameDecoder, SequenceNumber, UnnumberedFunction, MAX_SEQUENCE_NUMBER,
+};
+use igs_iec104_codec::asdu::Asdu;
+use igs_iec104_codec::error::DecodeError;
+
+use crate::config::{LinkConfig, Role};
+
+/// The state of the data transfer on the connection (§5.3, figures 17 and 18).
+///
+/// The controlled station only goes through `Stopped`, `Started` and
+/// `PendingUnconfirmedStop`. The controlling station also goes through
+/// `PendingStarted` and `PendingStopped`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TransferState {
+    /// STOPDT: no ASDU is sent. The state after the connection is established.
+    Stopped,
+    /// STARTDT act was sent, and the controlling station waits for STARTDT con.
+    PendingStarted,
+    /// STARTDT: the data transfer is enabled.
+    Started,
+    /// STOPDT act was sent, and the controlling station waits for STOPDT con.
+    PendingStopped,
+    /// STOPDT act was received (controlled) or sent (controlling) while I frames
+    /// are still unacknowledged. The stop is confirmed once they are.
+    PendingUnconfirmedStop,
+}
+
+/// A request of the user, for the start and stop procedures.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    /// Start the data transfer (STARTDT act).
+    StartDt,
+    /// Stop the data transfer (STOPDT act).
+    StopDt,
+}
+
+/// Something that arrived or that the user asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// Octets received from the transport. They may hold any number of frames,
+    /// and a frame may be split over several events.
+    Received(Vec<u8>),
+    /// An ASDU to send as an I frame.
+    SendAsdu(Asdu),
+    /// The user asks to start the data transfer.
+    StartDt,
+    /// The user asks to stop the data transfer.
+    StopDt,
+    /// Time passes. The timers of L3 use it; nothing happens yet.
+    Tick,
+}
+
+/// Why a user request was not carried out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rejection {
+    /// The window of k unacknowledged I frames is full. The ASDU is returned.
+    WindowFull(Asdu),
+    /// The data transfer is not started. The ASDU is returned.
+    TransferStopped(Asdu),
+    /// The request is for the controlling station, and this session is controlled.
+    NotForRole(Request),
+    /// The request does not apply in the current state.
+    InvalidState {
+        /// The request.
+        request: Request,
+        /// The state of the data transfer.
+        state: TransferState,
+    },
+}
+
+/// Why the connection is closed by this station.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseReason {
+    /// An I frame arrived in a state where the figures expect none (figures 17
+    /// and 18).
+    UnexpectedIFrame,
+    /// An S frame arrived in a state where the figures expect none (figures 17
+    /// and 18).
+    UnexpectedSFrame,
+    /// The N(S) of an I frame is not the next number expected (QUESTIONS.md Q-005).
+    SequenceError {
+        /// The number expected.
+        expected: SequenceNumber,
+        /// The number received.
+        received: SequenceNumber,
+    },
+    /// The N(R) acknowledges frames that were never sent (QUESTIONS.md Q-003).
+    InvalidReceiveSequence {
+        /// The N(R) received.
+        receive: SequenceNumber,
+    },
+    /// A frame could not be decoded, or the framing failed (QUESTIONS.md Q-006).
+    Decode(DecodeError),
+}
+
+/// What the session asks the caller to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Send this frame to the peer.
+    Send(Apdu),
+    /// Deliver this ASDU to the application.
+    Deliver(Asdu),
+    /// A user request was not carried out.
+    Rejected(Rejection),
+    /// Close the connection. The session accepts no more events after it.
+    Close(CloseReason),
+}
+
+/// The APCI state of one connection.
+#[derive(Debug)]
+pub struct Session {
+    config: LinkConfig,
+    decoder: FrameDecoder,
+    transfer: TransferState,
+    closed: bool,
+    /// V(S): the N(S) of the next I frame to send.
+    send_state: SequenceNumber,
+    /// V(R): the N(S) of the next I frame expected from the peer.
+    receive_state: SequenceNumber,
+    /// The N(R) last received: the peer has received every I frame before it.
+    acknowledged: SequenceNumber,
+    /// The N(R) last sent: every I frame of the peer before it is acknowledged.
+    acknowledged_to_peer: SequenceNumber,
+    last_received: Option<Instant>,
+}
+
+/// The number of steps from `from` to `to` modulo 32768.
+fn distance(from: SequenceNumber, to: SequenceNumber) -> u16 {
+    to.value().wrapping_sub(from.value()) & MAX_SEQUENCE_NUMBER
+}
+
+impl Session {
+    /// A session for a connection that has just been established: the sequence
+    /// numbers are zero and the data transfer is stopped (§5.1, §5.3).
+    pub fn new(config: LinkConfig) -> Self {
+        Self {
+            config,
+            decoder: FrameDecoder::new(),
+            transfer: TransferState::Stopped,
+            closed: false,
+            send_state: SequenceNumber::ZERO,
+            receive_state: SequenceNumber::ZERO,
+            acknowledged: SequenceNumber::ZERO,
+            acknowledged_to_peer: SequenceNumber::ZERO,
+            last_received: None,
+        }
+    }
+
+    /// The state of the data transfer.
+    pub fn transfer(&self) -> TransferState {
+        self.transfer
+    }
+
+    /// True once the session has asked to close the connection.
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// The number of I frames sent and not yet acknowledged by the peer.
+    pub fn outstanding(&self) -> u16 {
+        distance(self.acknowledged, self.send_state)
+    }
+
+    /// The time of the last frame received, if any.
+    pub fn last_received(&self) -> Option<Instant> {
+        self.last_received
+    }
+
+    /// Handles one event at time `now` and returns the actions to carry out.
+    pub fn handle(&mut self, event: Event, now: Instant) -> Vec<Action> {
+        if self.closed {
+            return Vec::new();
+        }
+        match event {
+            Event::Received(bytes) => self.receive(&bytes, now),
+            Event::SendAsdu(asdu) => vec![self.send_asdu(asdu)],
+            Event::StartDt => self.request(Request::StartDt),
+            Event::StopDt => self.request(Request::StopDt),
+            Event::Tick => Vec::new(),
+        }
+    }
+
+    fn receive(&mut self, bytes: &[u8], now: Instant) -> Vec<Action> {
+        let mut actions = Vec::new();
+        let mut input = bytes;
+        loop {
+            let frame = match self.decoder.next_frame(&mut input) {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return actions,
+                Err(error) => {
+                    self.close(CloseReason::Decode(error), &mut actions);
+                    return actions;
+                }
+            };
+            self.last_received = Some(now);
+            let outcome = match Apdu::decode(&frame) {
+                Ok(apdu) => self.apply(apdu, &mut actions),
+                Err(error) => Err(CloseReason::Decode(error)),
+            };
+            if let Err(reason) = outcome {
+                self.close(reason, &mut actions);
+                return actions;
+            }
+        }
+    }
+
+    /// Applies one received frame. An error is the reason to close.
+    fn apply(&mut self, apdu: Apdu, out: &mut Vec<Action>) -> Result<(), CloseReason> {
+        match apdu {
+            Apdu::Information {
+                send,
+                receive,
+                asdu,
+            } => self.information(send, receive, asdu, out),
+            Apdu::Supervisory { receive } => self.supervisory(receive, out),
+            Apdu::Unnumbered(function) => {
+                self.unnumbered(function, out);
+                Ok(())
+            }
+        }
+    }
+
+    fn information(
+        &mut self,
+        send: SequenceNumber,
+        receive: SequenceNumber,
+        asdu: Asdu,
+        out: &mut Vec<Action>,
+    ) -> Result<(), CloseReason> {
+        if !self.accepts_i_frames() {
+            return Err(CloseReason::UnexpectedIFrame);
+        }
+        self.acknowledge(receive)?;
+        if send != self.receive_state {
+            return Err(CloseReason::SequenceError {
+                expected: self.receive_state,
+                received: send,
+            });
+        }
+        self.receive_state = self.receive_state.next();
+        out.push(Action::Deliver(asdu));
+        self.settle_stop(out);
+        if self.is_stop_pending_on_controlling_station() {
+            // §5.3: the controlling station answers at once while the stop is pending.
+            self.send_supervisory(out);
+        } else if distance(self.acknowledged_to_peer, self.receive_state)
+            >= self.config.parameters().w
+        {
+            // §5.5: the acknowledgement is due at the latest after w I frames.
+            self.send_supervisory(out);
+        }
+        Ok(())
+    }
+
+    fn supervisory(
+        &mut self,
+        receive: SequenceNumber,
+        out: &mut Vec<Action>,
+    ) -> Result<(), CloseReason> {
+        // Figures 17 and 18: no S frame while stopped, or while the start is pending.
+        if matches!(
+            self.transfer,
+            TransferState::Stopped | TransferState::PendingStarted
+        ) {
+            return Err(CloseReason::UnexpectedSFrame);
+        }
+        self.acknowledge(receive)?;
+        self.settle_stop(out);
+        Ok(())
+    }
+
+    /// Takes the N(R) of a received frame as the acknowledgement of the frames
+    /// sent. It is valid when it lies between the last acknowledged number and
+    /// V(S) (§5.1).
+    fn acknowledge(&mut self, receive: SequenceNumber) -> Result<(), CloseReason> {
+        if distance(self.acknowledged, receive) > self.outstanding() {
+            return Err(CloseReason::InvalidReceiveSequence { receive });
+        }
+        self.acknowledged = receive;
+        Ok(())
+    }
+
+    /// Completes a pending stop once every sent I frame is acknowledged: the
+    /// controlled station confirms it (figure 17), the controlling station waits
+    /// for STOPDT con (figure 18).
+    fn settle_stop(&mut self, out: &mut Vec<Action>) {
+        if self.transfer != TransferState::PendingUnconfirmedStop || self.outstanding() != 0 {
+            return;
+        }
+        match self.config.role() {
+            Role::Controlled => {
+                self.transfer = TransferState::Stopped;
+                out.push(Action::Send(Apdu::Unnumbered(
+                    UnnumberedFunction::StopDtCon,
+                )));
+            }
+            Role::Controlling => self.transfer = TransferState::PendingStopped,
+        }
+    }
+
+    /// True when an I frame may arrive in the current state. Figure 17 closes on
+    /// any I frame once the stop is pending; figure 18 does not.
+    fn accepts_i_frames(&self) -> bool {
+        match self.transfer {
+            TransferState::Started => true,
+            TransferState::PendingStopped | TransferState::PendingUnconfirmedStop => {
+                self.config.role() == Role::Controlling
+            }
+            TransferState::Stopped | TransferState::PendingStarted => false,
+        }
+    }
+
+    fn is_stop_pending_on_controlling_station(&self) -> bool {
+        self.config.role() == Role::Controlling
+            && matches!(
+                self.transfer,
+                TransferState::PendingStopped | TransferState::PendingUnconfirmedStop
+            )
+    }
+
+    fn unnumbered(&mut self, function: UnnumberedFunction, out: &mut Vec<Action>) {
+        // §5.2: every test frame is confirmed, in any state.
+        if function == UnnumberedFunction::TestFrAct {
+            out.push(Action::Send(Apdu::Unnumbered(
+                UnnumberedFunction::TestFrCon,
+            )));
+            return;
+        }
+        match (self.config.role(), function, self.transfer) {
+            // Figure 17: the controlled station starts and stops.
+            (Role::Controlled, UnnumberedFunction::StartDtAct, TransferState::Stopped) => {
+                self.transfer = TransferState::Started;
+                out.push(Action::Send(Apdu::Unnumbered(
+                    UnnumberedFunction::StartDtCon,
+                )));
+            }
+            (Role::Controlled, UnnumberedFunction::StopDtAct, TransferState::Started) => {
+                self.controlled_stop(out);
+            }
+            // Figure 18: the controlling station is confirmed.
+            (Role::Controlling, UnnumberedFunction::StartDtCon, TransferState::PendingStarted) => {
+                self.transfer = TransferState::Started;
+            }
+            (
+                Role::Controlling,
+                UnnumberedFunction::StopDtCon,
+                TransferState::PendingStopped | TransferState::PendingUnconfirmedStop,
+            ) => {
+                self.transfer = TransferState::Stopped;
+            }
+            // Any other U frame leaves the state unchanged (figures 17 and 18).
+            _ => {}
+        }
+    }
+
+    /// The controlled station receives STOPDT act while started (figure 17).
+    fn controlled_stop(&mut self, out: &mut Vec<Action>) {
+        // §5.3: confirm the frames received before the stop, then wait for the
+        // acknowledgements of the frames sent, or confirm the stop at once.
+        if distance(self.acknowledged_to_peer, self.receive_state) > 0 {
+            self.send_supervisory(out);
+        }
+        if self.outstanding() > 0 {
+            self.transfer = TransferState::PendingUnconfirmedStop;
+        } else {
+            self.transfer = TransferState::Stopped;
+            out.push(Action::Send(Apdu::Unnumbered(
+                UnnumberedFunction::StopDtCon,
+            )));
+        }
+    }
+
+    fn send_asdu(&mut self, asdu: Asdu) -> Action {
+        if self.transfer != TransferState::Started {
+            return Action::Rejected(Rejection::TransferStopped(asdu));
+        }
+        if self.outstanding() >= self.config.parameters().k {
+            return Action::Rejected(Rejection::WindowFull(asdu));
+        }
+        let frame = Apdu::Information {
+            send: self.send_state,
+            receive: self.receive_state,
+            asdu,
+        };
+        self.send_state = self.send_state.next();
+        self.acknowledged_to_peer = self.receive_state;
+        Action::Send(frame)
+    }
+
+    fn send_supervisory(&mut self, out: &mut Vec<Action>) {
+        out.push(Action::Send(Apdu::Supervisory {
+            receive: self.receive_state,
+        }));
+        self.acknowledged_to_peer = self.receive_state;
+    }
+
+    /// The user asks to start or stop the data transfer. Only the controlling
+    /// station asks; the controlled station answers the peer's requests.
+    fn request(&mut self, request: Request) -> Vec<Action> {
+        match (self.config.role(), request, self.transfer) {
+            (Role::Controlled, _, _) => {
+                vec![Action::Rejected(Rejection::NotForRole(request))]
+            }
+            // Figure 18: Start connection / send STARTDT act.
+            (Role::Controlling, Request::StartDt, TransferState::Stopped) => {
+                self.transfer = TransferState::PendingStarted;
+                vec![Action::Send(Apdu::Unnumbered(
+                    UnnumberedFunction::StartDtAct,
+                ))]
+            }
+            // Figure 18: Stop connection / send STOPDT act. The frames received
+            // are confirmed first (§5.3), then the act is sent.
+            (Role::Controlling, Request::StopDt, TransferState::Started) => {
+                let mut actions = Vec::new();
+                if distance(self.acknowledged_to_peer, self.receive_state) > 0 {
+                    self.send_supervisory(&mut actions);
+                }
+                actions.push(Action::Send(Apdu::Unnumbered(
+                    UnnumberedFunction::StopDtAct,
+                )));
+                self.transfer = if self.outstanding() > 0 {
+                    TransferState::PendingUnconfirmedStop
+                } else {
+                    TransferState::PendingStopped
+                };
+                actions
+            }
+            (Role::Controlling, _, state) => {
+                vec![Action::Rejected(Rejection::InvalidState { request, state })]
+            }
+        }
+    }
+
+    fn close(&mut self, reason: CloseReason, out: &mut Vec<Action>) {
+        self.closed = true;
+        out.push(Action::Close(reason));
+    }
+}
+
+#[cfg(test)]
+mod tests;
