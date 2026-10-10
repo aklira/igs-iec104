@@ -35,6 +35,9 @@ pub const MAX_SEQUENCE_NUMBER: u16 = 0x7FFF;
 pub struct SequenceNumber(u16);
 
 impl SequenceNumber {
+    /// The first number of a connection.
+    pub const ZERO: Self = Self(0);
+
     /// Fails when `value` is above 32767 (fifteen bits).
     pub const fn new(value: u16) -> Option<Self> {
         if value > MAX_SEQUENCE_NUMBER {
