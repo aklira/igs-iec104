@@ -165,6 +165,24 @@ substituted time. The API names it `substituted`.
   `session::tests::an_i_frame_with_an_unexpected_send_number_closes_the_connection`,
   `session::tests::a_frame_that_cannot_be_decoded_closes_the_connection`.
 
+### D-014 — Confirmed means acknowledged by the link
+
+- **Decision**: an I frame, and so its ASDU, is confirmed when the peer's N(R) covers it. When a
+  connection ends, the ASDUs that were not confirmed are handed to the application as
+  `Delivery::Unacknowledged`, once. The library never sends them again on its own: the redundancy
+  group does not resend a command. A duplicate is possible when the peer received a frame whose
+  acknowledgement had not been sent yet. Without loss means that every unconfirmed ASDU reaches the
+  application, and that the points are read again after each switchover (the station interrogation).
+- **Sources**: 104 §5.1 (the acknowledgement of frames, N(R)); §10.5 (the retransmission of commands is
+  left to the application; the interrogation that follows a switchover); §10.6 (the retransmission of
+  unconfirmed user data). None of these clauses defines "confirmed" (QUESTIONS.md, Q-018).
+- **Confidence**: medium. The standard uses "confirmed" without a definition. The link acknowledgement
+  is the only confirmation that exists for every type of ASDU: the application confirmations (ACTCON,
+  ACTTERM) cover commands and interrogations, not monitoring data.
+- **Test**: `tests/transport.rs`, `an_asdu_the_peer_does_not_acknowledge_is_returned_when_the_connection_ends`
+  (the hand-back, and no frame sent after it). The group's part, that it does not resend, is in the
+  code and not yet tested by a redundancy test (an endpoint that does not acknowledge is needed).
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

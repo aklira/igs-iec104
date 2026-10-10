@@ -224,6 +224,51 @@ async fn a_command_while_the_transfer_is_stopped_is_returned() {
     assert!(link.task.await.expect("the task does not panic").is_ok());
 }
 
+/// D-014: an ASDU that the peer has not acknowledged when the connection ends is handed back to the
+/// application once (clauses 10.5 and 10.6). The driver does not send it again on its own.
+#[tokio::test(start_paused = true)]
+async fn an_asdu_the_peer_does_not_acknowledge_is_returned_when_the_connection_ends() {
+    let mut link = start(controlling());
+    link.commands
+        .send(Command::StartDt)
+        .await
+        .expect("the driver runs");
+    assert_eq!(read_frame(&mut link.peer).await, STARTDT_ACT);
+    assert_eq!(
+        link.deliveries.recv().await,
+        Some(Delivery::Transfer(TransferState::PendingStarted))
+    );
+    link.peer
+        .write_all(&STARTDT_CON)
+        .await
+        .expect("the peer writes");
+    assert_eq!(
+        link.deliveries.recv().await,
+        Some(Delivery::Transfer(TransferState::Started))
+    );
+
+    // The I frame carries the ASDU with N(S) = 0 and N(R) = 0 (§5.1). The peer reads it and then
+    // closes the stream without acknowledging it.
+    link.commands
+        .send(Command::SendAsdu(asdu()))
+        .await
+        .expect("the driver runs");
+    let mut frame = [0u8; 16];
+    link.peer
+        .read_exact(&mut frame)
+        .await
+        .expect("the I frame arrives");
+    assert_eq!(frame[..6], [0x68, 14, 0, 0, 0, 0]);
+    drop(link.peer);
+
+    assert_eq!(
+        link.deliveries.recv().await,
+        Some(Delivery::Unacknowledged(vec![asdu()]))
+    );
+    let result = link.task.await.expect("the task does not panic");
+    assert!(matches!(result, Err(TransportError::PeerClosed)));
+}
+
 #[tokio::test]
 async fn a_tcp_loopback_carries_a_start_and_an_asdu() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
