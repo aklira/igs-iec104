@@ -27,6 +27,7 @@ goes to `docs/ai-log/QUESTIONS.md`, never into code.
 | L4 Interop APCI ⛔ | Done for the accepted scope, committed `40b95a9`: probe (`bench/probe`) and 8 scenarios pass in both directions; the wrap of N(S) is an accepted known gap (expected failure). Fault injection moved to L5 | log `docs/ai-log/L4.md`; bench tests `tests/test_l4_interop.py` |
 | L5 Fault injection interop | Done: APCI relay in the probe; nine scenarios pass in both directions (t1 expiry, late and dropped and duplicated frames) | log `docs/ai-log/L5.md`; bench tests `tests/test_l5_faults.py` |
 | T2 Client API | Done in the working tree, not committed: `Client` with reconnect policy, the procedures of §7 and an event stream; nine integration tests on loopback | log `docs/ai-log/T2.md`; tests `crates/igs-iec104/tests/client.rs` |
+| T3 `igs104-client` binary | Done in the working tree, not committed: clap CLI with ten subcommands; checked by hand against the reference server (`docs/ai-log/T3.md`) | log `docs/ai-log/T3.md`; date conversion unit tests in the binary |
 
 ## Decisions taken (beyond the plan)
 
