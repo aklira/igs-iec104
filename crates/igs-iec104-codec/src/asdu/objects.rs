@@ -55,6 +55,15 @@ impl<T: Wire> Objects<T> {
         matches!(self, Self::Sequence { values, .. } if !values.is_empty())
     }
 
+    /// The address of the first object, or of the first value of a sequence. `None`
+    /// when no object is carried.
+    pub fn first_address(&self) -> Option<InformationObjectAddress> {
+        match self {
+            Self::Individual(objects) => objects.first().map(|object| object.address),
+            Self::Sequence { address, values } => (!values.is_empty()).then_some(*address),
+        }
+    }
+
     /// Writes the objects into the front of `dst`. Returns the octets written.
     pub fn encode(&self, dst: &mut [u8]) -> Result<usize, EncodeError> {
         if self.len() > MAX_OBJECTS {

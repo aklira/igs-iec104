@@ -32,6 +32,9 @@ All notable changes to this project are recorded in this file. The format follow
   policy of D-019), and a signature that does not verify.
 - The client renegotiates at its interval only when the station has not asked for a renegotiation in it
   (clause 7.4.5).
+- `igs_iec104::answer::judge` tells whether an ASDU of a station is the answer to a request: its
+  confirmation or termination, or a refusal (a negative confirmation, or a cause of 44 to 47). The client
+  binary `igs104-client` uses it, and now matches the information object address of the answer too.
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
 ### Fixed

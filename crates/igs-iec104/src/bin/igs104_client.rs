@@ -18,15 +18,17 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use igs_iec104::answer::{self, Answer, Request};
 use igs_iec104::client::{Client, ClientConfig, Event};
 use igs_iec104::clock;
 use igs_iec104::Delivery;
-use igs_iec104_codec::asdu::{Asdu, Body};
+use igs_iec104_codec::asdu::Asdu;
 use igs_iec104_codec::elements::{
     CounterFreeze, Dco, DoubleCommandState, Nva, Qcc, Qoc, Qoi, Qos, Rco, RegulatingStep, Sco,
     ShortFloat, Sva,
 };
 use igs_iec104_codec::formats::Cp56Time2a;
+use igs_iec104_codec::generated::profile::TypeId;
 use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
 use igs_iec104_link::TransferState;
 use tokio::time::timeout;
@@ -201,7 +203,8 @@ fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Outcome {
     let confirm = Duration::from_secs(cli.timeout);
-    let config = ClientConfig::new(cli.address, CommonAddress::new(cli.common_address));
+    let common_address = CommonAddress::new(cli.common_address);
+    let config = ClientConfig::new(cli.address, common_address);
     let mut client = Client::connect(config);
     match cli.action {
         Action::Monitor { duration } => {
@@ -219,8 +222,11 @@ async fn run(cli: Cli) -> Outcome {
                 Some(number) => Qoi::group(number).ok_or("the group is 1 to 16")?,
             };
             accepted(client.interrogate(group).await)?;
-            let terminated = judge_answer(cause::ACTIVATION_TERMINATION, |b| {
-                matches!(b, Body::C_IC_NA_1(_))
+            let terminated = answer_to(Request {
+                types: Some(&[TypeId::C_IC_NA_1]),
+                common_address,
+                address: address_of(0)?,
+                cause: cause::ACTIVATION_TERMINATION,
             });
             wait_for(
                 &mut client,
@@ -240,8 +246,11 @@ async fn run(cli: Cli) -> Outcome {
             };
             let qcc = Qcc::new(request, freeze).ok_or("the counter group is 0 to 63")?;
             accepted(client.counter_interrogation(qcc).await)?;
-            let terminated = judge_answer(cause::ACTIVATION_TERMINATION, |b| {
-                matches!(b, Body::C_CI_NA_1(_))
+            let terminated = answer_to(Request {
+                types: Some(&[TypeId::C_CI_NA_1]),
+                common_address,
+                address: address_of(0)?,
+                cause: cause::ACTIVATION_TERMINATION,
             });
             wait_for(
                 &mut client,
@@ -258,23 +267,34 @@ async fn run(cli: Cli) -> Outcome {
                 &mut client,
                 confirm,
                 "the answer to the read",
-                judge_answer(cause::REQUEST, |_| true),
+                answer_to(Request {
+                    types: None,
+                    common_address,
+                    address: address_of(address)?,
+                    cause: cause::REQUEST,
+                }),
             )
             .await
         }
         Action::ClockSync => {
             start(&mut client, confirm).await?;
             accepted(client.clock_sync(now_utc()?).await)?;
-            let confirmed = judge_answer(cause::ACTIVATION_CONFIRMATION, |b| {
-                matches!(b, Body::C_CS_NA_1(_))
+            let confirmed = answer_to(Request {
+                types: Some(&[TypeId::C_CS_NA_1]),
+                common_address,
+                address: address_of(0)?,
+                cause: cause::ACTIVATION_CONFIRMATION,
             });
             wait_for(&mut client, confirm, "the clock confirmation", confirmed).await
         }
         Action::Test { pattern } => {
             start(&mut client, confirm).await?;
             accepted(client.test_command(pattern, now_utc()?).await)?;
-            let confirmed = judge_answer(cause::ACTIVATION_CONFIRMATION, |b| {
-                matches!(b, Body::C_TS_TA_1(_))
+            let confirmed = answer_to(Request {
+                types: Some(&[TypeId::C_TS_TA_1]),
+                common_address,
+                address: address_of(0)?,
+                cause: cause::ACTIVATION_CONFIRMATION,
             });
             wait_for(&mut client, confirm, "the test confirmation", confirmed).await
         }
@@ -289,14 +309,16 @@ async fn run(cli: Cli) -> Outcome {
                 on: !off,
                 qoc: qualifier(select)?,
             };
-            accepted(
-                client
-                    .single_command(address_of(address)?, command, stamp(time)?)
-                    .await,
-            )?;
-            wait_for_execution(&mut client, confirm, select, |b| {
-                matches!(b, Body::C_SC_NA_1(_) | Body::C_SC_TA_1(_))
-            })
+            let address = address_of(address)?;
+            accepted(client.single_command(address, command, stamp(time)?).await)?;
+            wait_for_execution(
+                &mut client,
+                confirm,
+                select,
+                &[TypeId::C_SC_NA_1, TypeId::C_SC_TA_1],
+                common_address,
+                address,
+            )
             .await
         }
         Action::Double {
@@ -314,14 +336,16 @@ async fn run(cli: Cli) -> Outcome {
                 },
                 qoc: qualifier(select)?,
             };
-            accepted(
-                client
-                    .double_command(address_of(address)?, command, stamp(time)?)
-                    .await,
-            )?;
-            wait_for_execution(&mut client, confirm, select, |b| {
-                matches!(b, Body::C_DC_NA_1(_) | Body::C_DC_TA_1(_))
-            })
+            let address = address_of(address)?;
+            accepted(client.double_command(address, command, stamp(time)?).await)?;
+            wait_for_execution(
+                &mut client,
+                confirm,
+                select,
+                &[TypeId::C_DC_NA_1, TypeId::C_DC_TA_1],
+                common_address,
+                address,
+            )
             .await
         }
         Action::Step {
@@ -339,14 +363,16 @@ async fn run(cli: Cli) -> Outcome {
                 },
                 qoc: qualifier(select)?,
             };
-            accepted(
-                client
-                    .regulating_step(address_of(address)?, command, stamp(time)?)
-                    .await,
-            )?;
-            wait_for_execution(&mut client, confirm, select, |b| {
-                matches!(b, Body::C_RC_NA_1(_) | Body::C_RC_TA_1(_))
-            })
+            let address = address_of(address)?;
+            accepted(client.regulating_step(address, command, stamp(time)?).await)?;
+            wait_for_execution(
+                &mut client,
+                confirm,
+                select,
+                &[TypeId::C_RC_NA_1, TypeId::C_RC_TA_1],
+                common_address,
+                address,
+            )
             .await
         }
         Action::SetPoint {
@@ -385,17 +411,21 @@ async fn run(cli: Cli) -> Outcome {
                 }
             };
             accepted(sent)?;
-            wait_for_execution(&mut client, confirm, select, |b| {
-                matches!(
-                    b,
-                    Body::C_SE_NA_1(_)
-                        | Body::C_SE_TA_1(_)
-                        | Body::C_SE_NB_1(_)
-                        | Body::C_SE_TB_1(_)
-                        | Body::C_SE_NC_1(_)
-                        | Body::C_SE_TC_1(_)
-                )
-            })
+            wait_for_execution(
+                &mut client,
+                confirm,
+                select,
+                &[
+                    TypeId::C_SE_NA_1,
+                    TypeId::C_SE_TA_1,
+                    TypeId::C_SE_NB_1,
+                    TypeId::C_SE_TB_1,
+                    TypeId::C_SE_NC_1,
+                    TypeId::C_SE_TC_1,
+                ],
+                common_address,
+                address,
+            )
             .await
         }
     }
@@ -440,56 +470,53 @@ async fn monitor(client: &mut Client, duration: Option<Duration>) -> Outcome {
     Ok(())
 }
 
-/// A command whose select or execution is confirmed: a select by ACTCON, an
-/// execution by ACTTERM. A command with a select is answered by the station's
-/// ACTCON, then, on execution, by its ACTTERM.
+/// A command whose select or execution is confirmed: a select by its activation
+/// confirmation, an execution by its activation termination. A command with a select is
+/// answered by the station's activation confirmation, then, on execution, by its termination.
 async fn wait_for_execution(
     client: &mut Client,
     within: Duration,
     select: bool,
-    kind: fn(&Body) -> bool,
+    types: &[TypeId],
+    common_address: CommonAddress,
+    address: InformationObjectAddress,
 ) -> Outcome {
-    if select {
-        wait_for(
-            client,
-            within,
-            "the select confirmation",
-            judge_answer(cause::ACTIVATION_CONFIRMATION, kind),
-        )
-        .await
+    let (what, cause) = if select {
+        ("the select confirmation", cause::ACTIVATION_CONFIRMATION)
     } else {
-        wait_for(
-            client,
-            within,
-            "the execution termination",
-            judge_answer(cause::ACTIVATION_TERMINATION, kind),
-        )
-        .await
-    }
+        ("the execution termination", cause::ACTIVATION_TERMINATION)
+    };
+    let request = Request {
+        types: Some(types),
+        common_address,
+        address,
+        cause,
+    };
+    wait_for(client, within, what, answer_to(request)).await
 }
 
-/// Judges an event as the answer to a request. The expected cause confirms it. A
-/// negative confirmation (the P/N bit, 101 7.2.3) refuses the request whatever its
-/// cause, and so does a negative cause (44 to 47, §8.9). Any other event is not an answer.
-fn judge_answer(code: u8, kind: fn(&Body) -> bool) -> impl Fn(&Event) -> Option<Outcome> {
+/// Judges an event as the answer to `request`. A confirmation is a success; a refusal, negative
+/// or by a cause of 44 to 47, is an error that names the cause. Any other event is not an answer.
+fn answer_to<'a>(request: Request<'a>) -> impl Fn(&Event) -> Option<Outcome> + 'a {
     move |event| match event {
-        Event::Delivery(Delivery::Asdu(asdu)) if kind(&asdu.body) => {
-            let got = asdu.cot.cause();
-            if asdu.cot.negative {
-                Some(Err(format!(
-                    "the station refused the request: negative {} (cause {got})",
-                    cause_name(got)
-                )))
-            } else if got == code {
-                Some(Ok(()))
-            } else if (44..=47).contains(&got) {
-                Some(Err(format!(
-                    "the station refused the request: {} (cause {got})",
-                    refusal(got)
-                )))
-            } else {
-                None
-            }
+        Event::Delivery(Delivery::Asdu(asdu)) => {
+            answer::judge(asdu, &request).map(|answer| match answer {
+                Answer::Confirmed => Ok(()),
+                Answer::Refused {
+                    cause,
+                    negative: true,
+                } => Err(format!(
+                    "the station refused the request: negative {} (cause {cause})",
+                    cause_name(cause)
+                )),
+                Answer::Refused {
+                    cause,
+                    negative: false,
+                } => Err(format!(
+                    "the station refused the request: {} (cause {cause})",
+                    refusal(cause)
+                )),
+            })
         }
         _ => None,
     }
@@ -611,7 +638,7 @@ fn now_utc() -> Outcome<Cp56Time2a> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use igs_iec104_codec::asdu::{InformationObject, Objects};
+    use igs_iec104_codec::asdu::{Body, InformationObject, Objects};
     use igs_iec104_codec::header::CauseOfTransmission;
 
     /// An answer to a general interrogation, with the given cause and P/N bit.
@@ -630,8 +657,11 @@ mod tests {
     }
 
     fn judge_interrogation() -> impl Fn(&Event) -> Option<Outcome> {
-        judge_answer(cause::ACTIVATION_CONFIRMATION, |b| {
-            matches!(b, Body::C_IC_NA_1(_))
+        answer_to(Request {
+            types: Some(&[TypeId::C_IC_NA_1]),
+            common_address: CommonAddress::new(45),
+            address: InformationObjectAddress::new(0).expect("an address"),
+            cause: cause::ACTIVATION_CONFIRMATION,
         })
     }
 

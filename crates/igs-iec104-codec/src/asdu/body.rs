@@ -20,6 +20,7 @@ use crate::elements::{
 use crate::error::{DecodeError, EncodeError};
 use crate::formats::{Cp16Time2a, Cp56Time2a};
 use crate::generated::profile::TypeId;
+use crate::header::InformationObjectAddress;
 
 /// Declares [`Body`] from the list of in-profile type IDs and their values.
 macro_rules! asdu_bodies {
@@ -58,6 +59,14 @@ macro_rules! asdu_bodies {
             pub fn is_sequence(&self) -> bool {
                 match self {
                     $( Self::$type_id(objects) => objects.is_sequence(), )*
+                }
+            }
+
+            /// The address of the first object, or of the first value of a sequence; `None`
+            /// when the body carries no object.
+            pub fn first_address(&self) -> Option<InformationObjectAddress> {
+                match self {
+                    $( Self::$type_id(objects) => objects.first_address(), )*
                 }
             }
 

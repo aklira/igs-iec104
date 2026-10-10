@@ -611,3 +611,32 @@ fn profile_error_messages_name_the_type() {
     };
     assert_eq!(error.to_string(), "cause 11 is not allowed for M_PS_NA_1");
 }
+
+#[test]
+fn the_first_address_is_the_one_of_the_first_object_or_of_the_sequence() {
+    let at = |value: u32| InformationObjectAddress::new(value).expect("an address");
+    let qoi = crate::elements::Qoi::STATION;
+    let individual = Body::C_IC_NA_1(Objects::Individual(vec![
+        InformationObject {
+            address: at(7),
+            value: qoi,
+        },
+        InformationObject {
+            address: at(9),
+            value: qoi,
+        },
+    ]));
+    assert_eq!(individual.first_address(), Some(at(7)));
+    let sequence = Body::C_IC_NA_1(Objects::Sequence {
+        address: at(3),
+        values: vec![qoi, qoi],
+    });
+    assert_eq!(sequence.first_address(), Some(at(3)));
+    let empty_sequence = Body::C_IC_NA_1(Objects::Sequence {
+        address: at(3),
+        values: Vec::new(),
+    });
+    assert_eq!(empty_sequence.first_address(), None);
+    let empty = Body::C_IC_NA_1(Objects::Individual(Vec::new()));
+    assert_eq!(empty.first_address(), None);
+}

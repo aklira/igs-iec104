@@ -14,6 +14,9 @@
 //! Every channel is bounded. A caller waits when the command channel is full, and
 //! the supervisor waits when the event channel is full: back-pressure reaches the
 //! application, and nothing is dropped silently.
+//!
+//! The station answers a request with ASDUs, which arrive as deliveries. [`crate::answer::judge`]
+//! tells whether a delivery is the answer to a request.
 
 use std::fmt;
 use std::net::SocketAddr;
