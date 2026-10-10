@@ -25,3 +25,9 @@ pub mod formats;
 
 /// Information elements of the 104 profile, built on `formats`.
 pub mod elements;
+
+/// ASDU data unit identifier and information object address.
+pub mod header;
+
+/// Typed errors of the codec.
+pub mod error;
