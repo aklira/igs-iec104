@@ -87,6 +87,33 @@ impl fmt::Display for RedundancyError {
 impl std::error::Error for RedundancyError {}
 
 /// A controlling station with a redundancy group of connections.
+///
+/// # Examples
+///
+/// A controlling station with two stations in a redundancy group. One of them is started; when its connection
+/// is lost, the group starts the other one:
+///
+/// ```no_run
+/// use igs_iec104::client::ClientConfig;
+/// use igs_iec104::redundancy::{RedundancyEvent, RedundantClient};
+/// use igs_iec104_codec::header::CommonAddress;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let common = CommonAddress::new(1);
+/// let endpoints = vec![
+///     ClientConfig::new("127.0.0.1:2404".parse()?, common),
+///     ClientConfig::new("127.0.0.1:2405".parse()?, common),
+/// ];
+/// let mut group = RedundantClient::connect(endpoints)?;
+/// while let Some(event) = group.next_event().await {
+///     if let RedundancyEvent::Switched { from, to } = event {
+///         println!("started {to}, after {from:?}");
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub struct RedundantClient {
     commands: mpsc::Sender<Command>,
     events: mpsc::UnboundedReceiver<RedundancyEvent>,

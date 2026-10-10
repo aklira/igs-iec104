@@ -216,6 +216,46 @@ struct Station<H> {
 
 /// A controlled station, ready to run. Create it with [`Server::bind`], publish its points
 /// through [`Server::handle`], then run it with [`Server::run`].
+///
+/// # Examples
+///
+/// A controlled station with one single point, which is on. It refuses every command, and answers the
+/// interrogation of its controlling station:
+///
+/// ```no_run
+/// use igs_iec104::process_image::PointValue;
+/// use igs_iec104::server::{Handler, Operation, Refusal, Server, ServerConfig};
+/// use igs_iec104_codec::elements::{QualityFlags, Siq};
+/// use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
+///
+/// struct Refuse;
+///
+/// impl Handler for Refuse {
+///     fn select(&self, _operation: &Operation) -> Result<(), Refusal> {
+///         Err(Refusal::Rejected)
+///     }
+///
+///     fn execute(&self, _operation: &Operation) -> Result<(), Refusal> {
+///         Err(Refusal::Rejected)
+///     }
+/// }
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let config = ServerConfig::new("127.0.0.1:2404".parse()?, CommonAddress::new(1));
+/// let server = Server::bind(config, Refuse).await?;
+/// server.handle().add_point(
+///     InformationObjectAddress::new(1).ok_or("address 1")?,
+///     PointValue::Single(Siq {
+///         on: true,
+///         quality: QualityFlags::default(),
+///     }),
+///     false,
+/// )?;
+/// server.run().await;
+/// # Ok(())
+/// # }
+/// ```
 pub struct Server<H: Handler> {
     listener: TcpListener,
     station: Arc<Station<H>>,

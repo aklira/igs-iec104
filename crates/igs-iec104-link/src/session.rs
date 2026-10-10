@@ -143,6 +143,25 @@ pub enum Action {
 }
 
 /// The APCI state of one connection.
+///
+/// # Examples
+///
+/// The session is sans-I/O: the caller feeds it the events of the transport, and carries out the actions
+/// that it returns. A controlling station that asks for the data transfer sends STARTDT act, and the
+/// transfer state changes to pending, in that order:
+///
+/// ```
+/// use igs_iec104_link::{Action, Event, LinkConfig, Role, Session, TransferState};
+/// use std::time::Instant;
+///
+/// let now = Instant::now();
+/// let mut session = Session::new(LinkConfig::with_defaults(Role::Controlling), now);
+/// let actions = session.handle(Event::StartDt, now);
+/// assert!(matches!(
+///     actions.as_slice(),
+///     [Action::Send(_), Action::Transfer(TransferState::PendingStarted)]
+/// ));
+/// ```
 #[derive(Debug)]
 pub struct Session {
     config: LinkConfig,

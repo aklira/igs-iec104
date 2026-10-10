@@ -155,6 +155,36 @@ impl From<ProcedureError> for ClientError {
 }
 
 /// A client of one controlled station. Dropping it stops the supervisor.
+///
+/// # Examples
+///
+/// A controlling station that keeps a connection to a station, starts the data transfer once the connection
+/// is up, and asks for a general interrogation. The programs in `examples/` do the same with a command line:
+///
+/// ```no_run
+/// use igs_iec104::client::{Client, ClientConfig, Event};
+/// use igs_iec104::Delivery;
+/// use igs_iec104_codec::elements::Qoi;
+/// use igs_iec104_codec::header::CommonAddress;
+/// use igs_iec104_link::TransferState;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let config = ClientConfig::new("127.0.0.1:2404".parse()?, CommonAddress::new(1));
+/// let mut client = Client::connect(config);
+/// while let Some(event) = client.next_event().await {
+///     match event {
+///         Event::Connected => client.start_data_transfer().await?,
+///         Event::Delivery(Delivery::Transfer(TransferState::Started)) => {
+///             client.interrogate(Qoi::STATION).await?;
+///         }
+///         Event::Delivery(Delivery::Asdu(asdu)) => println!("{asdu:?}"),
+///         _ => {}
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct Client {
     commands: mpsc::Sender<Command>,

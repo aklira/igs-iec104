@@ -48,6 +48,21 @@ const _: () = assert!(CAUSE_OF_TRANSMISSION_OCTS == 2);
 
 /// One ASDU: its cause, its common address and its information objects. The
 /// type identification is the variant of `body`.
+///
+/// # Examples
+///
+/// An interrogation of the station, as it is on the wire, decodes and encodes again to the same octets:
+///
+/// ```
+/// use igs_iec104_codec::asdu::Asdu;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let octets = [0x64, 0x01, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x14];
+/// let asdu = Asdu::decode(&octets)?;
+/// assert_eq!(asdu.to_vec()?, octets);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asdu {
     /// Cause of transmission, with the P/N, test and originator fields.

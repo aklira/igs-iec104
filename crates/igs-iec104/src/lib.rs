@@ -9,6 +9,10 @@
 //! of §7 (task T2); the [`procedures`] build their ASDUs. The [`server`] is the controlled
 //! station (task S2), which answers them from its [`process_image`] (task S1); the
 //! [`clock`] gives the CP56Time2a of this machine.
+//!
+//! Start with [`client::Client`] for a controlling station, [`server::Server`] for a controlled
+//! station, and [`redundancy::RedundantClient`] for a controlling station with several stations.
+//! Each of them has an example in its documentation. The programs in `examples/` run them.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]

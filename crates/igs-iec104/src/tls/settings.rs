@@ -97,6 +97,30 @@ impl TrustAnchors {
 }
 
 /// The settings of a connection, checked against the profile by [`TlsSettings::validate`].
+///
+/// # Examples
+///
+/// The settings of a station: its identity, the trust anchors, and the policy. Here the certificates are DER
+/// files, as the settings take them. The backend (`OpensslBackend`, feature `openssl`) is built from these
+/// settings, and wrapped in `Secure` for a `ServerConfig` or a `ClientConfig`:
+///
+/// ```no_run
+/// use std::sync::Arc;
+///
+/// use igs_iec104::tls::events::Discard;
+/// use igs_iec104::tls::settings::{Identity, TlsSettings, TrustAnchors};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let certificate = std::fs::read("station.der")?;
+/// let key = std::fs::read("station.key.der")?;
+/// let root = std::fs::read("root.der")?;
+/// let identity = Identity::new(vec![certificate], key, &Discard)?;
+/// let trust = TrustAnchors::new(vec![root])?;
+/// let settings = TlsSettings::new(identity, trust, Arc::new(Discard)).with_tls13(true);
+/// settings.validate()?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct TlsSettings {
     identity: Identity,
