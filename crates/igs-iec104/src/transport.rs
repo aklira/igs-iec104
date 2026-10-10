@@ -166,7 +166,6 @@ async fn drive<S: Transport>(
     commands: &mut mpsc::Receiver<Command>,
     deliveries: &mpsc::Sender<Delivery>,
 ) -> Result<(), TransportError> {
-    let mut transfer = session.transfer();
     loop {
         let event = tokio::select! {
             read = read_chunk(stream) => match read.map_err(TransportError::Io)? {
@@ -199,13 +198,12 @@ async fn drive<S: Transport>(
                         return Ok(());
                     }
                 }
+                Action::Transfer(state) => {
+                    if deliveries.send(Delivery::Transfer(state)).await.is_err() {
+                        return Ok(());
+                    }
+                }
                 Action::Close(reason) => return Err(TransportError::Closed(reason)),
-            }
-        }
-        if session.transfer() != transfer {
-            transfer = session.transfer();
-            if deliveries.send(Delivery::Transfer(transfer)).await.is_err() {
-                return Ok(());
             }
         }
     }

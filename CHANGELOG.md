@@ -23,6 +23,14 @@ All notable changes to this project are recorded in this file. The format follow
 - Examples `client`, `server`, `redundancy` and `tls`.
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
+### Fixed
+
+- `igs-iec104-link` reports a change of the transfer state as `Action::Transfer`, in order with the
+  ASDUs of the same read. The change used to follow the whole read, so an application could receive
+  an ASDU before the start of the data transfer, when the confirmation and the ASDU came in one read.
+- The OpenSSL backend configures on OpenSSL 3.0, which rejects a signature algorithm list that names
+  one scheme twice.
+
 ### Known gaps
 
 - TLS has two backends: OpenSSL (default, feature `openssl`) and rustls (feature `rustls`). The OpenSSL
