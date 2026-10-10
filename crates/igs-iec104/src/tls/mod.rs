@@ -25,6 +25,9 @@ pub mod settings;
 #[cfg(feature = "rustls")]
 pub mod rustls_backend;
 
+#[cfg(feature = "openssl")]
+pub mod openssl_backend;
+
 /// A TLS setting, certificate or handshake that the profile or the backend refuses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TlsError {
