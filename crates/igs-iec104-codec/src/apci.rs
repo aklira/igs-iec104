@@ -6,8 +6,8 @@
 //!
 //! A frame is the start octet 68H, the length octet, the four control octets
 //! and, for the I format only, an ASDU. The length counts the control field
-//! and the ASDU, so it is 4 to 253. [`FrameDecoder`] cuts a byte stream into
-//! frames; [`Apdu`] reads one frame.
+//! and the ASDU, so it is 4 to 253. [`FrameDecoder`](crate::apci::FrameDecoder) cuts a byte
+//! stream into frames; [`Apdu`](crate::apci::Apdu) reads one frame.
 //!
 //! Bit positions of the control field come from the figures 6 to 8 of §5.
 

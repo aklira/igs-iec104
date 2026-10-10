@@ -92,6 +92,7 @@ impl Cp16Time2a {
         write(dst, MILLISECONDS, u64::from(self.milliseconds))
     }
 
+    /// The milliseconds within the minute, 0 to 59 999.
     pub const fn milliseconds(self) -> u16 {
         self.milliseconds
     }
@@ -162,18 +163,22 @@ impl Cp24Time2a {
         write(dst, INVALID, u64::from(self.invalid))
     }
 
+    /// The milliseconds within the minute, 0 to 59 999.
     pub const fn milliseconds(self) -> u16 {
         self.milliseconds
     }
 
+    /// The minutes, 0 to 59.
     pub const fn minutes(self) -> u8 {
         self.minutes
     }
 
+    /// The IV flag: the time is invalid.
     pub const fn is_invalid(self) -> bool {
         self.invalid
     }
 
+    /// The RES1 bit, which 101 names GEN: the time is substituted, not real.
     pub const fn is_substituted(self) -> bool {
         self.substituted
     }
@@ -300,42 +305,52 @@ impl Cp56Time2a {
         write(dst, RES4, 0)
     }
 
+    /// The milliseconds within the minute, 0 to 59 999.
     pub const fn milliseconds(self) -> u16 {
         self.milliseconds
     }
 
+    /// The minutes, 0 to 59.
     pub const fn minutes(self) -> u8 {
         self.minutes
     }
 
+    /// The hours, 0 to 23.
     pub const fn hours(self) -> u8 {
         self.hours
     }
 
+    /// The day of the month, 1 to 31.
     pub const fn day_of_month(self) -> u8 {
         self.day_of_month
     }
 
+    /// The day of the week: 0 when not used, otherwise 1 (Monday) to 7.
     pub const fn day_of_week(self) -> u8 {
         self.day_of_week
     }
 
+    /// The month, 1 to 12.
     pub const fn month(self) -> u8 {
         self.month
     }
 
+    /// The year within the century, 0 to 99.
     pub const fn year(self) -> u8 {
         self.year
     }
 
+    /// The IV flag: the time is invalid.
     pub const fn is_invalid(self) -> bool {
         self.invalid
     }
 
+    /// The SU flag: summer time is in effect.
     pub const fn is_summer_time(self) -> bool {
         self.summer_time
     }
 
+    /// The RES1 bit, which 101 names GEN: the time is substituted, not real.
     pub const fn is_substituted(self) -> bool {
         self.substituted
     }

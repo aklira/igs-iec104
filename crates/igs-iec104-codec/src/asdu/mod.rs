@@ -6,10 +6,11 @@
 //! of a whole ASDU (data unit identifier and information objects), and the
 //! profile rules that a decoded ASDU must satisfy.
 //!
-//! [`Asdu::decode`] accepts every in-profile type ID and rejects the others
-//! with [`DecodeError::UnsupportedTypeId`], which carries the raw octets.
-//! [`validate_profile`] checks the rules of the profile (type, sequence form,
-//! cause of transmission, direction) and says which one failed.
+//! [`Asdu::decode`](crate::asdu::Asdu::decode) accepts every in-profile type ID and rejects the
+//! others with [`DecodeError::UnsupportedTypeId`](crate::error::DecodeError::UnsupportedTypeId),
+//! which carries the raw octets. [`validate_profile`](crate::asdu::validate_profile) checks the
+//! rules of the profile (type, sequence form, cause of transmission, direction) and says which one
+//! failed.
 
 mod body;
 mod objects;
