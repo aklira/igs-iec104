@@ -39,6 +39,9 @@ All notable changes to this project are recorded in this file. The format follow
   still queued when a connection ends and those made until the next connection, and reports each one
   as `Event::Discarded`, instead of sending them on the next connection. `OfflineRequests::Queue`, the
   default, keeps the former behaviour. `Event` has the new variant `Discarded`.
+- `Delivery::Transmitted`: a session of the controlling role reports each ASDU it writes in an I
+  frame, before any answer to it, so that a controlling station knows on which connection its request
+  left. A controlled session does not report it. `Delivery` has the new variant `Transmitted`.
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
 ### Fixed

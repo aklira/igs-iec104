@@ -19,8 +19,9 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use igs_iec104_codec::apci::Apdu;
 use igs_iec104_codec::asdu::Asdu;
-use igs_iec104_link::{Action, Event, LinkConfig, Rejection, Session, TransferState};
+use igs_iec104_link::{Action, Event, LinkConfig, Rejection, Role, Session, TransferState};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -65,6 +66,10 @@ pub enum Delivery {
     /// The state of the data transfer changed: `Started` once STARTDT con is received,
     /// `Stopped` once STOPDT con is received (figures 17 and 18).
     Transfer(TransferState),
+    /// An ASDU of the application was written to the connection in an I frame (task U3). Only a
+    /// session of the controlling role reports it, so that a controlling station knows on which
+    /// connection its request left. It comes before any answer to that request.
+    Transmitted(Asdu),
     /// The ASDUs sent on the connection and not acknowledged when it ended, oldest first.
     /// They are delivered once, after the last I frame has been sent, before the connection
     /// ends. A redundancy group sends them again on another connection (§10.5, §10.6).
@@ -145,8 +150,16 @@ pub async fn run_shared<S: Transport>(
     commands: &mut mpsc::Receiver<Command>,
     deliveries: &mpsc::Sender<Delivery>,
 ) -> Result<(), TransportError> {
+    let report_transmissions = config.role() == Role::Controlling;
     let mut session = Session::new(config, now());
-    let outcome = drive(&mut stream, &mut session, commands, deliveries).await;
+    let outcome = drive(
+        &mut stream,
+        &mut session,
+        commands,
+        deliveries,
+        report_transmissions,
+    )
+    .await;
     // The ASDUs the peer did not acknowledge are handed back, whatever ended the connection.
     let unacknowledged = session.unacknowledged();
     if !unacknowledged.is_empty() {
@@ -165,6 +178,7 @@ async fn drive<S: Transport>(
     session: &mut Session,
     commands: &mut mpsc::Receiver<Command>,
     deliveries: &mpsc::Sender<Delivery>,
+    report_transmissions: bool,
 ) -> Result<(), TransportError> {
     loop {
         let event = tokio::select! {
@@ -183,6 +197,11 @@ async fn drive<S: Transport>(
                 Action::Send(apdu) => {
                     let bytes = apdu.to_vec().map_err(TransportError::Encode)?;
                     stream.write_all(&bytes).await.map_err(TransportError::Io)?;
+                    if let (true, Apdu::Information { asdu, .. }) = (report_transmissions, apdu) {
+                        if deliveries.send(Delivery::Transmitted(asdu)).await.is_err() {
+                            return Ok(());
+                        }
+                    }
                 }
                 Action::Deliver(asdu) => {
                     if deliveries.send(Delivery::Asdu(asdu)).await.is_err() {

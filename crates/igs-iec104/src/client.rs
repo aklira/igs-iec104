@@ -230,8 +230,9 @@ impl From<ProcedureError> for ClientError {
 /// - `Ok(())` means the request was accepted into the command channel. It is not sent yet, and it is
 ///   not confirmed. A request made while the connection is down waits for the next connection, or
 ///   is dropped and reported as [`Event::Discarded`] with [`OfflineRequests::Discard`].
-/// - The answer arrives as a [`Delivery::Asdu`] event. [`Delivery::Rejected`] reports a command that
-///   was not carried out.
+/// - [`Delivery::Transmitted`] tells when the request left in an I frame, on the current connection.
+///   The answer arrives later as a [`Delivery::Asdu`] event. [`Delivery::Rejected`] reports a command
+///   that was not carried out.
 /// - When the connection ends, the answer to a request of that connection may never arrive.
 ///
 /// ```no_run

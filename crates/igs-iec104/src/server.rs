@@ -526,6 +526,8 @@ impl<H: Handler> Connection<'_, H> {
             }
             // The request does not apply to a controlled station.
             Delivery::Rejected(_) => {}
+            // A controlled session does not report its transmissions.
+            Delivery::Transmitted(_) => {}
         }
         true
     }

@@ -58,6 +58,9 @@ The client decodes every type identification of the 104 profile and delivers eac
 | Function | Tests |
 | --- | --- |
 | Decoding of every in-profile type | `igs-iec104-codec/src/asdu/tests.rs` `every_in_profile_type_has_a_vector_that_round_trips` |
+| Transmission of a request reported (`Delivery::Transmitted`), before its answer; not reported by a controlled session | `tests/transport.rs` `only_a_controlling_session_reports_its_transmissions`, `an_asdu_the_peer_does_not_acknowledge_is_returned_when_the_connection_ends` |
+| Requests made without a connection queued (default) or discarded (`OfflineRequests::Discard`) | `tests/client.rs` `a_request_made_without_a_connection_waits_for_the_next_one_by_default`, `a_request_made_without_a_connection_is_discarded_with_the_discard_policy` |
+| Every delivery of a connection comes before its `Disconnected` event | `tests/client.rs` `the_deliveries_of_a_connection_come_before_its_disconnection` |
 | Judging the answer to a request (confirmation, negative confirmation, causes 44 to 47) | `src/answer.rs` tests, for example `a_negative_confirmation_refuses_with_its_cause`, `a_cause_of_44_to_47_refuses_the_request` |
 
 ## Answers of the controlled station (server)

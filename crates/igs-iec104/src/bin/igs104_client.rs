@@ -567,6 +567,7 @@ fn print_event(event: &Event) {
         Event::Delivery(Delivery::Asdu(asdu)) => println!("{}", describe(asdu)),
         Event::Delivery(Delivery::Rejected(rejection)) => println!("rejected: {rejection:?}"),
         Event::Delivery(Delivery::Transfer(state)) => println!("transfer: {state:?}"),
+        Event::Delivery(Delivery::Transmitted(asdu)) => println!("sent: {:?}", asdu.type_id()),
         Event::Delivery(Delivery::Unacknowledged(asdus)) => {
             println!(
                 "unacknowledged when the connection ended: {} ASDU(s)",

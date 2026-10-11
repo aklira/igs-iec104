@@ -259,6 +259,11 @@ async fn an_asdu_the_peer_does_not_acknowledge_is_returned_when_the_connection_e
         .await
         .expect("the I frame arrives");
     assert_eq!(frame[..6], [0x68, 14, 0, 0, 0, 0]);
+    // The controlling session reports that the I frame was written.
+    assert_eq!(
+        link.deliveries.recv().await,
+        Some(Delivery::Transmitted(asdu()))
+    );
     drop(link.peer);
 
     assert_eq!(
@@ -377,4 +382,80 @@ async fn connecting_to_a_closed_port_reports_the_error() {
     };
     let result = connect(address, Duration::from_secs(30)).await;
     assert!(matches!(result, Err(TransportError::Connect(_))));
+}
+
+#[tokio::test]
+async fn only_a_controlling_session_reports_its_transmissions() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("has an address");
+    let accept = tokio::spawn(async move { listener.accept().await });
+    let client_stream = connect(address, Duration::from_secs(30))
+        .await
+        .expect("connects");
+    let (server_stream, _) = accept
+        .await
+        .expect("the accept task runs")
+        .expect("accepts");
+
+    let (client_commands, client_commands_rx) = mpsc::channel(8);
+    let (client_deliveries_tx, mut client_deliveries) = mpsc::channel(8);
+    let (server_commands, server_commands_rx) = mpsc::channel(8);
+    let (server_deliveries_tx, mut server_deliveries) = mpsc::channel(8);
+    let client = tokio::spawn(run(
+        client_stream,
+        controlling(),
+        client_commands_rx,
+        client_deliveries_tx,
+    ));
+    let server = tokio::spawn(run(
+        server_stream,
+        controlled(),
+        server_commands_rx,
+        server_deliveries_tx,
+    ));
+
+    client_commands
+        .send(Command::StartDt)
+        .await
+        .expect("the client runs");
+    assert_eq!(
+        client_deliveries.recv().await,
+        Some(Delivery::Transfer(TransferState::PendingStarted))
+    );
+    assert_eq!(
+        client_deliveries.recv().await,
+        Some(Delivery::Transfer(TransferState::Started))
+    );
+    assert_eq!(
+        server_deliveries.recv().await,
+        Some(Delivery::Transfer(TransferState::Started))
+    );
+
+    // The request: its transmission is reported before the station's answer.
+    client_commands
+        .send(Command::SendAsdu(asdu()))
+        .await
+        .expect("the client runs");
+    assert_eq!(
+        client_deliveries.recv().await,
+        Some(Delivery::Transmitted(asdu()))
+    );
+    assert_eq!(server_deliveries.recv().await, Some(Delivery::Asdu(asdu())));
+    server_commands
+        .send(Command::SendAsdu(asdu()))
+        .await
+        .expect("the server runs");
+    assert_eq!(client_deliveries.recv().await, Some(Delivery::Asdu(asdu())));
+
+    // The controlled session reported nothing of its own transmission.
+    drop(client_commands);
+    let _ = client.await;
+    drop(server_commands);
+    let _ = server.await;
+    while let Some(delivery) = server_deliveries.recv().await {
+        assert!(
+            !matches!(delivery, Delivery::Transmitted(_)),
+            "a controlled session reports no transmission"
+        );
+    }
 }
