@@ -419,3 +419,45 @@ fn a_group_is_one_to_sixteen_and_the_point_must_exist() {
         Err(ProcessError::UnknownPoint)
     );
 }
+
+#[test]
+fn every_point_type_is_published_in_its_plain_and_time_tagged_forms() {
+    // The capability matrix (docs/capabilities.md) cites this test for the monitoring types the
+    // station publishes.
+    let values = [
+        single(true),
+        PointValue::Double(Diq::decode(&[0x02]).expect("a double point")),
+        PointValue::Step(Vti::decode(&[0x05]).expect("a step"), quality()),
+        PointValue::Bitstring(Bsi::decode(&[1, 0, 0, 0]).expect("a bitstring"), quality()),
+        PointValue::Normalized(Nva::from_raw(7), quality()),
+        PointValue::Scaled(Sva::new(-5), quality()),
+        float(2.5),
+        PointValue::Counter(Bcr::decode(&[1, 0, 0, 0, 0]).expect("a counter")),
+        PointValue::Packed(Scd::decode(&[1, 0, 0, 0]).expect("a status"), quality()),
+        PointValue::NormalizedUnqualified(Nva::from_raw(7)),
+    ];
+    for value in values {
+        for stamped in [false, true] {
+            let Some(type_id) = value.type_id(stamped) else {
+                // M_PS and M_ME_ND have no time-tagged form, and the image refuses it.
+                assert!(stamped, "{value:?} has a plain form");
+                assert!(image(4).add_point(ca(1), ioa(1), value, true).is_err());
+                continue;
+            };
+            let body = value
+                .body(ioa(1), stamped.then(|| time(5)))
+                .expect("a body for each type");
+            assert_eq!(body.type_id(), type_id);
+            let asdu = Asdu {
+                cot: igs_iec104_codec::header::CauseOfTransmission::new(cause::SPONTANEOUS)
+                    .expect("a cause"),
+                common_address: ca(1),
+                body,
+            };
+            assert!(
+                validate_profile(&asdu, Direction::Monitor).is_ok(),
+                "{type_id:?} is a valid spontaneous ASDU"
+            );
+        }
+    }
+}

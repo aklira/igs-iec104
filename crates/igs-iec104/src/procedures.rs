@@ -280,6 +280,23 @@ mod tests {
     }
 
     #[test]
+    fn a_group_interrogation_carries_the_qualifier_of_its_group() {
+        for number in 1..=16u8 {
+            let group = Qoi::group(number).expect("a group");
+            let asdu = interrogation(common(), group).expect("builds");
+            assert_eq!(asdu.cot.cause(), cause::ACTIVATION);
+            match asdu.body {
+                Body::C_IC_NA_1(Objects::Individual(objects)) => {
+                    let object = objects.first().expect("one object");
+                    assert_eq!(object.value, group);
+                    assert_eq!(object.address.value(), 0);
+                }
+                other => panic!("unexpected body {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_command_with_a_time_tag_uses_the_time_tagged_type() {
         let sco = Sco {
             on: true,

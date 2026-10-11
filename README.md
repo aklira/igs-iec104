@@ -66,6 +66,9 @@ The API documentation is built with `cargo doc --workspace --no-deps --open`. Ev
 the library crates is documented. CI builds the documentation with warnings as errors, so a broken
 link fails the build.
 
+The procedures and type identifications that the client and the controlled station support, with
+the test that covers each, are listed in [`docs/capabilities.md`](docs/capabilities.md).
+
 ## Minimum supported Rust version
 
 The minimum supported Rust version (MSRV) is 1.85, the `rust-version` of the workspace. CI builds

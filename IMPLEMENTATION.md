@@ -459,6 +459,6 @@ API: a maintainer reviews the API of U1 to U3 before it is implemented.
 | U1 Graceful server shutdown ⛔ | [ ] |
 | U2 Server connection and transfer events ⛔ | [ ] |
 | U3 Client command policy on disconnect ⛔ | [ ] |
-| U4 Supported action matrix | [ ] |
+| U4 Supported action matrix | [x] |
 
 Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, L5, T2, T3, T4, S1–S4, S5, X1, X2, C7, X3. The tasks U1 to U4 can run before X3; U4 first, as it needs no API review.

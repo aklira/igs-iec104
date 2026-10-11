@@ -774,3 +774,99 @@ fn every_answer_to_an_interrogation_or_a_read_is_a_valid_monitoring_asdu() {
         }
     }
 }
+
+/// The bodies of every command type of the profile at address 672, as a select or an execution.
+fn every_command(select: bool) -> Vec<Body> {
+    use igs_iec104_codec::elements::{Dco, DoubleCommandState, Nva, Rco, RegulatingStep, Sva};
+    let qoc = Qoc::new(0, select).expect("a qualifier");
+    let qos = Qos::new(0, select).expect("a qualifier");
+    let single = Sco { on: true, qoc };
+    let double = Dco {
+        state: DoubleCommandState::On,
+        qoc,
+    };
+    let step = Rco {
+        step: RegulatingStep::Higher,
+        qoc,
+    };
+    let normalized = (Nva::from_raw(7), qos);
+    let scaled = (Sva::new(-5), qos);
+    let float = (ShortFloat::from_f32(2.5), qos);
+    vec![
+        Body::C_SC_NA_1(one(672, single)),
+        Body::C_SC_TA_1(one(
+            672,
+            Timed {
+                value: single,
+                time: time(500),
+            },
+        )),
+        Body::C_DC_NA_1(one(672, double)),
+        Body::C_DC_TA_1(one(
+            672,
+            Timed {
+                value: double,
+                time: time(500),
+            },
+        )),
+        Body::C_RC_NA_1(one(672, step)),
+        Body::C_RC_TA_1(one(
+            672,
+            Timed {
+                value: step,
+                time: time(500),
+            },
+        )),
+        Body::C_SE_NA_1(one(672, normalized)),
+        Body::C_SE_TA_1(one(
+            672,
+            Timed {
+                value: normalized,
+                time: time(500),
+            },
+        )),
+        Body::C_SE_NB_1(one(672, scaled)),
+        Body::C_SE_TB_1(one(
+            672,
+            Timed {
+                value: scaled,
+                time: time(500),
+            },
+        )),
+        Body::C_SE_NC_1(one(672, float)),
+        Body::C_SE_TC_1(one(
+            672,
+            Timed {
+                value: float,
+                time: time(500),
+            },
+        )),
+    ]
+}
+
+#[test]
+fn every_command_type_is_selected_then_executed() {
+    // The capability matrix (docs/capabilities.md) cites this test for each command type.
+    let judge = Judge::accepting();
+    let image = image();
+    let now = Instant::now();
+    for (select, execute) in every_command(true).into_iter().zip(every_command(false)) {
+        let type_id = select.type_id();
+        let mut responder = Responder::new(ca(STATION), TIMEOUT);
+        let select = request(cause::ACTIVATION, select);
+        assert_eq!(
+            summary(&reply(&mut responder, &judge, &image, &select, now)),
+            vec![(type_id, cause::ACTIVATION_CONFIRMATION, false, STATION)],
+            "the select of {type_id:?}"
+        );
+        let execute = request(cause::ACTIVATION, execute);
+        assert_eq!(
+            summary(&reply(&mut responder, &judge, &image, &execute, now)),
+            vec![
+                (type_id, cause::ACTIVATION_CONFIRMATION, false, STATION),
+                (type_id, cause::ACTIVATION_TERMINATION, false, STATION),
+            ],
+            "the execution of {type_id:?}"
+        );
+    }
+}
