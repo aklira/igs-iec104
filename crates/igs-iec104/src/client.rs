@@ -120,7 +120,8 @@ impl ClientConfig {
 pub enum Event {
     /// A connection is established. The data transfer is stopped until it is started.
     Connected,
-    /// The connection ended with this error. The client reconnects after the delay.
+    /// The connection ended with this error. The client reconnects after the delay. Every
+    /// delivery of the connection comes before this event.
     Disconnected(TransportError),
     /// A connection attempt failed. The client tries again after the delay.
     ConnectFailed(TransportError),
@@ -496,16 +497,6 @@ async fn supervise(
 ) {
     let link = config.link;
     let t0 = link.parameters().t0;
-    let (deliveries, mut delivered) = mpsc::channel(config.capacity);
-    let forward = events.clone();
-    tokio::spawn(async move {
-        while let Some(delivery) = delivered.recv().await {
-            if forward.send(Event::Delivery(delivery)).await.is_err() {
-                break;
-            }
-        }
-    });
-
     let mut delay = config.reconnect.initial;
     loop {
         match open(&config, t0).await {
@@ -514,7 +505,22 @@ async fn supervise(
                 if events.send(Event::Connected).await.is_err() {
                     break;
                 }
-                match run_shared(stream, link, &mut commands, &deliveries).await {
+                // Each connection has its own delivery channel. Its deliveries are all handed to
+                // the application before the connection's end is reported, so that no delivery of
+                // a connection follows its `Disconnected` event.
+                let (deliveries, mut delivered) = mpsc::channel(config.capacity);
+                let forward = events.clone();
+                let forwarding = tokio::spawn(async move {
+                    while let Some(delivery) = delivered.recv().await {
+                        if forward.send(Event::Delivery(delivery)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                let ended = run_shared(stream, link, &mut commands, &deliveries).await;
+                drop(deliveries);
+                let _ = forwarding.await;
+                match ended {
                     // The command channel or the event channel is gone: the client was dropped.
                     Ok(()) => break,
                     Err(error) => {

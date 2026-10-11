@@ -44,6 +44,9 @@ All notable changes to this project are recorded in this file. The format follow
   an ASDU before the start of the data transfer, when the confirmation and the ASDU came in one read.
 - The OpenSSL backend configures on OpenSSL 3.0, which rejects a signature algorithm list that names
   one scheme twice.
+- The client reports every delivery of a connection before its `Disconnected` event. A delivery could
+  arrive after the end of its connection was reported, and even after the next `Connected` event, so
+  an application could not tell which connection an ASDU came from.
 - A station does not send the answers of a closed connection on the connection that takes over. A
   controlling station took such an answer for the answer to its new request: a select could be
   refused by the confirmation of an earlier execution (D-021 in PROVENANCE.md). The events are

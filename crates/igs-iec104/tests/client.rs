@@ -468,3 +468,75 @@ async fn double_regulating_and_set_point_commands_are_confirmed() {
     )
     .await;
 }
+
+/// A controlled station that accepts one connection, waits for the start of the data transfer,
+/// sends `count` spontaneous ASDUs, and closes the connection.
+async fn serve_then_close(count: u32) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let station = listener.local_addr().expect("has an address");
+    tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        drop(listener);
+        let (commands, mut commands_rx) = mpsc::channel(32);
+        let (deliveries_tx, mut deliveries) = mpsc::channel(32);
+        let transport = tokio::spawn(async move {
+            let config = LinkConfig::with_defaults(Role::Controlled);
+            let _ = run_shared(stream, config, &mut commands_rx, &deliveries_tx).await;
+        });
+        while let Some(delivery) = deliveries.recv().await {
+            if let Delivery::Transfer(TransferState::Started) = delivery {
+                break;
+            }
+        }
+        for n in 1..=count {
+            let asdu = Asdu {
+                cot: CauseOfTransmission::new(cause::SPONTANEOUS).expect("valid cause"),
+                common_address: CommonAddress::new(STATION),
+                body: Body::M_SP_NA_1(Objects::Individual(vec![InformationObject {
+                    address: address(n),
+                    value: Siq {
+                        on: true,
+                        quality: QualityFlags::default(),
+                    },
+                }])),
+            };
+            if commands.send(Command::SendAsdu(asdu)).await.is_err() {
+                return;
+            }
+        }
+        // Dropping the commands sends what is queued, then closes the stream.
+        drop(commands);
+        let _ = transport.await;
+    });
+    station
+}
+
+#[tokio::test]
+async fn the_deliveries_of_a_connection_come_before_its_disconnection() {
+    const COUNT: u32 = 10;
+    let mut config = config(serve_then_close(COUNT).await);
+    // Channels of one event, and a slow reader, so that the deliveries of the connection are
+    // still on their way when the connection ends.
+    config.capacity = 1;
+    let mut client = Client::connect(config);
+    let mut received = 0;
+    let outcome = timeout(Duration::from_secs(10), async {
+        loop {
+            match client.next_event().await.expect("the client runs") {
+                Event::Connected => client.start_data_transfer().await.expect("queued"),
+                Event::Delivery(Delivery::Asdu(_)) => received += 1,
+                Event::Disconnected(_) => return received,
+                _ => {}
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the connection ends within 10 s");
+    assert_eq!(
+        outcome, COUNT,
+        "every ASDU of the connection arrives before its disconnection"
+    );
+}
