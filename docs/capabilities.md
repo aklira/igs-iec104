@@ -133,6 +133,18 @@ transfer types.
 | Connections still open after the grace period are closed by force, with their transport | `src/server/tests.rs` `the_connections_still_open_after_the_grace_period_are_closed_by_force`, `connections_that_close_in_time_are_not_forced`, `a_transport_is_aborted_with_its_connection` |
 | The report counts the events the station still held | `tests/server.rs` `the_events_no_connection_took_are_counted_at_the_stop` |
 
+## Connection events of the station
+
+With `ServerConfig::with_events`, the station reports its connections on a stream taken once with
+`Server::events`. A full stream drops the event and counts it; the station never waits.
+
+| Event | Tests |
+| --- | --- |
+| `Connected` (with the peer address), `Transfer` (STARTDT, STOPDT), `Closed` (with its end) | `tests/server.rs` `the_station_reports_a_connection_its_transfer_and_its_end` |
+| `Superseded` by a switchover (§10.7) | `tests/server.rs` `the_station_reports_the_connection_a_switchover_supersedes` |
+| `Closed` at a stop of the station; `Forced` for a connection closed by force | `tests/server.rs` `a_stop_reports_the_end_of_each_connection`; `src/server/tests.rs` `a_connection_dropped_without_an_end_is_reported_as_closed_by_force` |
+| A full stream drops and counts, and the station still answers | `tests/server.rs` `a_full_event_stream_drops_and_counts_without_slowing_the_station` |
+
 ## Redundancy and TLS
 
 | Function | Tests |

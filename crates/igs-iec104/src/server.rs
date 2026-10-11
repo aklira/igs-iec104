@@ -25,6 +25,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -39,6 +40,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time;
 
 use crate::clock;
+use crate::error::TransportError;
 use crate::process_image::{PointValue, ProcessError, ProcessImage, Update};
 use crate::tls::Secure;
 use crate::transport::{run, secure_server, Command, Delivery, Transport};
@@ -77,6 +79,8 @@ pub struct ServerConfig {
     pub event_capacity: NonZeroUsize,
     /// The TLS backend of the connections (task X1), or `None` for plain TCP.
     pub tls: Option<Secure>,
+    /// The capacity of the stream of connection events (task U2), or `None` for no stream.
+    pub events: Option<NonZeroUsize>,
 }
 
 impl ServerConfig {
@@ -99,6 +103,97 @@ impl ServerConfig {
             selection_timeout: DEFAULT_SELECTION_TIMEOUT,
             event_capacity: NonZeroUsize::new(DEFAULT_EVENT_CAPACITY).unwrap_or(NonZeroUsize::MIN),
             tls: None,
+            events: None,
+        }
+    }
+
+    /// Reports the connections of the station on a stream of `capacity` events, taken with
+    /// [`Server::events`] (task U2).
+    #[must_use]
+    pub fn with_events(mut self, capacity: NonZeroUsize) -> Self {
+        self.events = Some(capacity);
+        self
+    }
+}
+
+/// What the station reports about its connections (task U2). The identifier of a connection is
+/// the same in every event about it.
+#[derive(Debug)]
+pub enum ServerEvent {
+    /// A connection was accepted, after its TLS handshake when it is secured.
+    Connected {
+        /// The identifier of the connection.
+        id: u64,
+        /// The address of the controlling station.
+        peer: SocketAddr,
+    },
+    /// The data transfer of a connection changed state (STARTDT, STOPDT, §5.3).
+    Transfer {
+        /// The identifier of the connection.
+        id: u64,
+        /// The new state.
+        state: TransferState,
+    },
+    /// Another connection started its data transfer, so this one, which was not stopped, is
+    /// closed (§10.7).
+    Superseded {
+        /// The identifier of the connection that is closed.
+        id: u64,
+        /// The identifier of the connection that started.
+        by: u64,
+    },
+    /// A connection ended.
+    Closed {
+        /// The identifier of the connection.
+        id: u64,
+        /// Why it ended.
+        end: ConnectionEnd,
+    },
+}
+
+/// Why a connection of the station ended (task U2).
+#[derive(Debug)]
+pub enum ConnectionEnd {
+    /// The station closed it: the station stopped, or the connection was superseded.
+    Station,
+    /// The transport ended with this error: the peer closed the stream, the link closed the
+    /// connection (a time-out, for example), or the stream failed.
+    Transport(TransportError),
+    /// The station stopped and closed it by force at the end of the grace period.
+    Forced,
+}
+
+/// The stream of the events of a station, taken once with [`Server::events`] (task U2). When it
+/// is full, the station does not wait: the event is dropped and counted.
+#[derive(Debug)]
+pub struct ServerEvents {
+    events: mpsc::Receiver<ServerEvent>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl ServerEvents {
+    /// The next event; `None` once the station has stopped and every event was read.
+    pub async fn next(&mut self) -> Option<ServerEvent> {
+        self.events.recv().await
+    }
+
+    /// The number of events the station dropped because the stream was full.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// The station's end of the event stream. It never waits.
+#[derive(Clone, Debug)]
+struct EventSink {
+    events: mpsc::Sender<ServerEvent>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl EventSink {
+    fn emit(&self, event: ServerEvent) {
+        if self.events.try_send(event).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -168,20 +263,24 @@ impl Group {
 
     /// Records the state of the data transfer of connection `id`. A connection that starts
     /// supersedes every other connection that is not stopped (§10.7).
-    fn transfer(&mut self, id: u64, state: TransferState) {
+    /// Returns the connections it supersedes.
+    fn transfer(&mut self, id: u64, state: TransferState) -> Vec<u64> {
         if let Some(member) = self.members.get_mut(&id) {
             member.transfer = state;
         }
+        let mut superseded = Vec::new();
         if state == TransferState::Started {
             self.started = Some(id);
             for (other, member) in &self.members {
                 if *other != id && member.transfer != TransferState::Stopped {
                     member.superseded.notify_one();
+                    superseded.push(*other);
                 }
             }
         } else if self.started == Some(id) {
             self.started = None;
         }
+        superseded
     }
 
     /// Removes connection `id`, and keeps the events it leaves unsent for the connection that
@@ -218,6 +317,16 @@ struct Station<H> {
     /// Set to true when the station stops (task U1): each connection sends what it has, then
     /// closes.
     stop: watch::Sender<bool>,
+    /// The stream of connection events, when the configuration asks for it (task U2).
+    events: Option<EventSink>,
+}
+
+impl<H> Station<H> {
+    fn report(&self, event: ServerEvent) {
+        if let Some(events) = &self.events {
+            events.emit(event);
+        }
+    }
 }
 
 /// What a stop of the station did (task U1).
@@ -289,6 +398,7 @@ pub struct Server<H: Handler> {
     listener: TcpListener,
     station: Arc<Station<H>>,
     tls: Option<Secure>,
+    events: Option<ServerEvents>,
 }
 
 impl<H: Handler> Server<H> {
@@ -302,6 +412,23 @@ impl<H: Handler> Server<H> {
         let listener = TcpListener::bind(config.bind)
             .await
             .map_err(ServerError::Io)?;
+        let (sink, events) = match config.events {
+            Some(capacity) => {
+                let (sender, receiver) = mpsc::channel(capacity.get());
+                let dropped = Arc::new(AtomicU64::new(0));
+                (
+                    Some(EventSink {
+                        events: sender,
+                        dropped: Arc::clone(&dropped),
+                    }),
+                    Some(ServerEvents {
+                        events: receiver,
+                        dropped,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         let process = Arc::new(Process {
             group: Mutex::new(Group {
                 image,
@@ -315,6 +442,7 @@ impl<H: Handler> Server<H> {
         Ok(Self {
             listener,
             tls: config.tls,
+            events,
             station: Arc::new(Station {
                 process,
                 handler,
@@ -323,6 +451,7 @@ impl<H: Handler> Server<H> {
                 initialization,
                 selection_timeout: config.selection_timeout,
                 stop: watch::Sender::new(false),
+                events: sink,
             }),
         })
     }
@@ -330,6 +459,12 @@ impl<H: Handler> Server<H> {
     /// The address the station listens on; the port is the one bound, even when it was 0.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    /// The stream of the station's connection events, once: `None` when it was already taken, or
+    /// when the configuration did not ask for it ([`ServerConfig::with_events`]).
+    pub fn events(&mut self) -> Option<ServerEvents> {
+        self.events.take()
     }
 
     /// A handle to publish the points of the station.
@@ -363,15 +498,16 @@ impl<H: Handler> Server<H> {
             tokio::select! {
                 () = &mut stop => break,
                 accepted = self.listener.accept() => match accepted {
-                    Ok((stream, _peer)) => match &self.tls {
+                    Ok((stream, peer)) => match &self.tls {
                         None => {
-                            connections.spawn(serve(stream, Arc::clone(&self.station)));
+                            connections.spawn(serve(stream, Arc::clone(&self.station), peer));
                         }
                         Some(tls) => {
                             connections.spawn(serve_secured(
                                 tls.clone(),
                                 stream,
                                 Arc::clone(&self.station),
+                                peer,
                             ));
                         }
                     },
@@ -467,7 +603,12 @@ impl ServerHandle {
 
 /// Secures an accepted connection, then serves it. A failed handshake ends the connection; the
 /// handshake raises its security events.
-async fn serve_secured<H: Handler>(tls: Secure, stream: TcpStream, station: Arc<Station<H>>) {
+async fn serve_secured<H: Handler>(
+    tls: Secure,
+    stream: TcpStream,
+    station: Arc<Station<H>>,
+    peer: SocketAddr,
+) {
     let t0 = station.link.parameters().t0;
     let mut stopping = station.stop.subscribe();
     let secured = tokio::select! {
@@ -476,13 +617,25 @@ async fn serve_secured<H: Handler>(tls: Secure, stream: TcpStream, station: Arc<
         _ = stopping.wait_for(|stop| *stop) => return,
     };
     if let Ok(secured) = secured {
-        serve(secured, station).await;
+        serve(secured, station, peer).await;
     }
 }
 
 /// Serves one connection until its transport ends, or until another connection supersedes it.
-async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Station<H>>) {
+async fn serve<S: Transport + 'static, H: Handler>(
+    stream: S,
+    station: Arc<Station<H>>,
+    peer: SocketAddr,
+) {
     let (id, superseded) = lock(&station.process.group).join();
+    station.report(ServerEvent::Connected { id, peer });
+    // Reports the end of the connection when it is dropped: at the end of this function, or when
+    // the station closes the connection by force.
+    let mut closed = ClosedReport {
+        events: station.events.clone(),
+        id,
+        end: None,
+    };
     let (commands_tx, commands_rx) = mpsc::channel::<Command>(CHANNEL);
     let (deliveries_tx, mut deliveries_rx) = mpsc::channel::<Delivery>(CHANNEL);
     let mut transport = AbortOnDrop(tokio::spawn(run(
@@ -554,7 +707,10 @@ async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Stati
     while let Some(delivery) = deliveries_rx.recv().await {
         connection.deliver(delivery);
     }
-    let _ = (&mut transport.0).await;
+    closed.end = Some(match (&mut transport.0).await {
+        Ok(Err(error)) => ConnectionEnd::Transport(error),
+        Ok(Ok(())) | Err(_) => ConnectionEnd::Station,
+    });
     let mut leftover = connection.unacknowledged;
     leftover.extend(connection.returned);
     leftover.extend(connection.pending);
@@ -565,6 +721,25 @@ async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Stati
     lock(&station.process.group).leave(id, leftover);
     // The connection that takes over may be waiting for the events of the leftover ASDUs.
     station.process.queued.notify_one();
+}
+
+/// Reports the end of a connection when it is dropped. Without an end set, the connection was
+/// closed by force.
+struct ClosedReport {
+    events: Option<EventSink>,
+    id: u64,
+    end: Option<ConnectionEnd>,
+}
+
+impl Drop for ClosedReport {
+    fn drop(&mut self) {
+        if let Some(events) = &self.events {
+            events.emit(ServerEvent::Closed {
+                id: self.id,
+                end: self.end.take().unwrap_or(ConnectionEnd::Forced),
+            });
+        }
+    }
 }
 
 /// The state of one connection between the transport and the station.
@@ -604,7 +779,15 @@ impl<H: Handler> Connection<'_, H> {
             }
             Delivery::Transfer(state) => {
                 self.started = state == TransferState::Started;
-                lock(&self.station.process.group).transfer(self.id, state);
+                let superseded = lock(&self.station.process.group).transfer(self.id, state);
+                self.station
+                    .report(ServerEvent::Transfer { id: self.id, state });
+                for other in superseded {
+                    self.station.report(ServerEvent::Superseded {
+                        id: other,
+                        by: self.id,
+                    });
+                }
                 if self.started && !self.initialized {
                     self.initialized = true;
                     let end = respond::end_of_initialization(

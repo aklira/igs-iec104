@@ -718,3 +718,140 @@ async fn the_events_no_connection_took_are_counted_at_the_stop() {
     let report = run.await.expect("the station does not panic");
     assert_eq!(report.pending_events, 3);
 }
+
+/// A station with one float point and a stream of connection events of `capacity`, run until the
+/// returned sender is used.
+async fn observed(
+    capacity: usize,
+) -> (
+    SocketAddr,
+    igs_iec104::server::ServerEvents,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<igs_iec104::server::ShutdownReport>,
+) {
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().expect("an address"),
+        CommonAddress::new(STATION),
+    )
+    .with_events(std::num::NonZeroUsize::new(capacity).expect("a capacity"));
+    let mut server = Server::bind(config, Judge).await.expect("binds");
+    let address = server.local_addr().expect("has an address");
+    server
+        .handle()
+        .add_point(
+            address_of(FLOAT),
+            PointValue::Float(ShortFloat::from_f32(1.5), quality()),
+            false,
+        )
+        .expect("registered");
+    let events = server.events().expect("the stream is asked for");
+    assert!(server.events().is_none(), "the stream is taken once");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let run = tokio::spawn(server.run_until(
+        async move {
+            let _ = stopped.await;
+        },
+        Duration::from_secs(5),
+    ));
+    (address, events, stop, run)
+}
+
+/// The next event of the station, within 10 s.
+async fn next_station_event(
+    events: &mut igs_iec104::server::ServerEvents,
+) -> igs_iec104::server::ServerEvent {
+    timeout(Duration::from_secs(10), events.next())
+        .await
+        .expect("an event within 10 s")
+        .expect("the stream is open")
+}
+
+#[tokio::test]
+async fn the_station_reports_a_connection_its_transfer_and_its_end() {
+    use igs_iec104::server::{ConnectionEnd, ServerEvent};
+    let (address, mut events, _stop, _run) = observed(32).await;
+    let client = started(address, STATION).await;
+    let ServerEvent::Connected { id, peer } = next_station_event(&mut events).await else {
+        panic!("the connection is reported first");
+    };
+    assert!(peer.ip().is_loopback());
+    assert!(matches!(
+        next_station_event(&mut events).await,
+        ServerEvent::Transfer { id: of, state: TransferState::Started } if of == id
+    ));
+    drop(client);
+    match next_station_event(&mut events).await {
+        ServerEvent::Closed { id: of, end } => {
+            assert_eq!(of, id);
+            assert!(!matches!(end, ConnectionEnd::Forced), "{end:?}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(events.dropped(), 0);
+}
+
+#[tokio::test]
+async fn the_station_reports_the_connection_a_switchover_supersedes() {
+    use igs_iec104::server::ServerEvent;
+    let (address, mut events, _stop, _run) = observed(32).await;
+    let _first = started(address, STATION).await;
+    let ServerEvent::Connected { id: first, .. } = next_station_event(&mut events).await else {
+        panic!("the first connection is reported");
+    };
+    let _second = started(address, STATION).await;
+    let mut superseded = None;
+    let mut closed = false;
+    while superseded.is_none() || !closed {
+        match next_station_event(&mut events).await {
+            ServerEvent::Superseded { id, by } => superseded = Some((id, by)),
+            ServerEvent::Closed { id, .. } if id == first => closed = true,
+            _ => {}
+        }
+    }
+    let (id, by) = superseded.expect("a switchover");
+    assert_eq!(id, first);
+    assert_ne!(by, first);
+}
+
+#[tokio::test]
+async fn a_full_event_stream_drops_and_counts_without_slowing_the_station() {
+    // A stream of one event that nobody reads: the station still answers.
+    let (address, events, _stop, _run) = observed(1).await;
+    let mut client = started(address, STATION).await;
+    client
+        .interrogate(Qoi::STATION)
+        .await
+        .expect("the client runs");
+    next_until(
+        &mut client,
+        |event| {
+            matches!(
+                event,
+                Event::Delivery(Delivery::Asdu(asdu))
+                    if asdu.cot.cause() == cause::ACTIVATION_TERMINATION
+            )
+        },
+        "the end of the interrogation",
+    )
+    .await;
+    assert!(events.dropped() > 0, "the transfer event is counted");
+}
+
+#[tokio::test]
+async fn a_stop_reports_the_end_of_each_connection() {
+    use igs_iec104::server::{ConnectionEnd, ServerEvent};
+    let (address, mut events, stop, run) = observed(32).await;
+    let _client = started(address, STATION).await;
+    stop.send(()).expect("the station runs");
+    run.await.expect("the station does not panic");
+    let mut end = None;
+    while let Some(event) = events.next().await {
+        if let ServerEvent::Closed { end: reason, .. } = event {
+            end = Some(reason);
+        }
+    }
+    assert!(
+        matches!(end, Some(ConnectionEnd::Station)),
+        "the station closed the connection: {end:?}"
+    );
+}

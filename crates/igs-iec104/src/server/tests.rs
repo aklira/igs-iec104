@@ -22,7 +22,10 @@ use tokio::sync::{mpsc, Notify};
 use tokio::time::{sleep, timeout};
 
 use super::respond::{Handler, Operation, Refusal};
-use super::{close_connections, serve, AbortOnDrop, Group, Process, ServerHandle, Station};
+use super::{
+    close_connections, serve, AbortOnDrop, ClosedReport, ConnectionEnd, EventSink, Group, Process,
+    ServerEvent, ServerHandle, Station,
+};
 use crate::procedures;
 use crate::process_image::{PointValue, ProcessImage};
 use crate::transport::{run, Command, Delivery};
@@ -73,6 +76,7 @@ fn station() -> (Arc<Station<Accept>>, ServerHandle) {
         initialization: Coi::new(0, false).expect("a cause"),
         selection_timeout: Duration::from_secs(30),
         stop: tokio::sync::watch::Sender::new(false),
+        events: None,
     });
     let handle = ServerHandle {
         common_address,
@@ -117,7 +121,11 @@ async fn settle() {
 /// flight. The station starts it by a STARTDT act written by the test.
 async fn silent_connection(station: &Arc<Station<Accept>>) -> DuplexStream {
     let (server_side, peer) = duplex(1 << 16);
-    tokio::spawn(serve(server_side, Arc::clone(station)));
+    tokio::spawn(serve(
+        server_side,
+        Arc::clone(station),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+    ));
     peer
 }
 
@@ -141,7 +149,11 @@ fn controlling_link() -> LinkConfig {
 
 fn controller(station: &Arc<Station<Accept>>) -> Controller {
     let (server_side, peer) = duplex(1 << 16);
-    tokio::spawn(serve(server_side, Arc::clone(station)));
+    tokio::spawn(serve(
+        server_side,
+        Arc::clone(station),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+    ));
     let (commands, commands_rx) = mpsc::channel(32);
     let (deliveries_tx, deliveries) = mpsc::channel(32);
     tokio::spawn(async move {
@@ -396,4 +408,38 @@ async fn a_transport_is_aborted_with_its_connection() {
     }));
     drop(guard);
     assert!(released.await.is_err());
+}
+
+#[test]
+fn a_connection_dropped_without_an_end_is_reported_as_closed_by_force() {
+    let (sender, mut receiver) = mpsc::channel(4);
+    let dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let sink = EventSink {
+        events: sender,
+        dropped: Arc::clone(&dropped),
+    };
+    drop(ClosedReport {
+        events: Some(sink.clone()),
+        id: 7,
+        end: None,
+    });
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(ServerEvent::Closed {
+            id: 7,
+            end: ConnectionEnd::Forced
+        })
+    ));
+    drop(ClosedReport {
+        events: Some(sink),
+        id: 8,
+        end: Some(ConnectionEnd::Station),
+    });
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(ServerEvent::Closed {
+            id: 8,
+            end: ConnectionEnd::Station
+        })
+    ));
 }

@@ -457,7 +457,7 @@ API: a maintainer reviews the API of U1 to U3 before it is implemented.
 | X2 Documentation and examples | [x] |
 | X3 Release readiness ⛔ | [ ] |
 | U1 Graceful server shutdown ⛔ | [x] |
-| U2 Server connection and transfer events ⛔ | [ ] |
+| U2 Server connection and transfer events ⛔ | [x] |
 | U3 Client command policy on disconnect ⛔ | [x] |
 | U4 Supported action matrix | [x] |
 

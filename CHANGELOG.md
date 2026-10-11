@@ -46,6 +46,11 @@ All notable changes to this project are recorded in this file. The format follow
   connection sends the ASDUs it has taken and closes, and the connections still open after the grace
   period are closed by force. It returns a `ShutdownReport`: the connections open at the stop, those
   closed by force, and the events the station still held. `igs104-server --for` uses it.
+- `ServerConfig::with_events` and `Server::events`: the station reports its connections as
+  `ServerEvent`s: accepted (with the peer address), a change of transfer state, superseded by a
+  switchover, and closed (with a `ConnectionEnd`: by the station, by the transport, or by force). The
+  stream is bounded; a full stream drops the event and counts it (`ServerEvents::dropped`), and the
+  station never waits for it.
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
 ### Fixed
