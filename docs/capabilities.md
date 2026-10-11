@@ -125,6 +125,14 @@ carry the plain type. A counter is answered only by a counter interrogation.
 Not published: the protection equipment events (M_EP_TD_1, M_EP_TE_1, M_EP_TF_1) and the file
 transfer types.
 
+## Stopping the station
+
+| Function | Tests |
+| --- | --- |
+| `Server::run_until`: no new connection after the stop; open connections close within the grace period | `tests/server.rs` `a_stop_with_no_connection_returns_at_once`, `a_stop_closes_the_open_connections_within_the_grace_period` |
+| Connections still open after the grace period are closed by force, with their transport | `src/server/tests.rs` `the_connections_still_open_after_the_grace_period_are_closed_by_force`, `connections_that_close_in_time_are_not_forced`, `a_transport_is_aborted_with_its_connection` |
+| The report counts the events the station still held | `tests/server.rs` `the_events_no_connection_took_are_counted_at_the_stop` |
+
 ## Redundancy and TLS
 
 | Function | Tests |

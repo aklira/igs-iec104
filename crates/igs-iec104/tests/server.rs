@@ -640,3 +640,81 @@ async fn the_station_keeps_the_value_it_reports_in_interrogations() {
         other => panic!("expected the float, got {other:?}"),
     }
 }
+
+/// A station with one float point, run until the returned sender is used or dropped, with the
+/// given grace period. The task returns the report of the stop.
+async fn stoppable(
+    grace: Duration,
+) -> (
+    SocketAddr,
+    ServerHandle,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<igs_iec104::server::ShutdownReport>,
+) {
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().expect("an address"),
+        CommonAddress::new(STATION),
+    );
+    let server = Server::bind(config, Judge).await.expect("binds");
+    let address = server.local_addr().expect("has an address");
+    let handle = server.handle();
+    handle
+        .add_point(
+            address_of(FLOAT),
+            PointValue::Float(ShortFloat::from_f32(1.5), quality()),
+            false,
+        )
+        .expect("registered");
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let run = tokio::spawn(server.run_until(
+        async move {
+            let _ = stopped.await;
+        },
+        grace,
+    ));
+    (address, handle, stop, run)
+}
+
+#[tokio::test]
+async fn a_stop_with_no_connection_returns_at_once() {
+    let (address, _handle, stop, run) = stoppable(Duration::from_secs(5)).await;
+    let began = tokio::time::Instant::now();
+    stop.send(()).expect("the station runs");
+    let report = run.await.expect("the station does not panic");
+    assert!(began.elapsed() < Duration::from_secs(1));
+    assert_eq!(report.connections, 0);
+    assert_eq!(report.forced, 0);
+    // The station accepts no connection once it has stopped.
+    assert!(tokio::net::TcpStream::connect(address).await.is_err());
+}
+
+#[tokio::test]
+async fn a_stop_closes_the_open_connections_within_the_grace_period() {
+    let (address, _handle, stop, run) = stoppable(Duration::from_secs(5)).await;
+    let mut client = started(address, STATION).await;
+    stop.send(()).expect("the station runs");
+    let report = run.await.expect("the station does not panic");
+    assert_eq!(report.connections, 1);
+    assert_eq!(report.forced, 0);
+    next_until(
+        &mut client,
+        |event| matches!(event, Event::Disconnected(_)),
+        "the end of the connection",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn the_events_no_connection_took_are_counted_at_the_stop() {
+    let (_address, handle, stop, run) = stoppable(Duration::from_secs(5)).await;
+    for n in 1..=3u8 {
+        let value = PointValue::Float(ShortFloat::from_f32(f32::from(n)), quality());
+        assert_eq!(
+            handle.update(address_of(FLOAT), value, time()),
+            Ok(Update::Queued)
+        );
+    }
+    stop.send(()).expect("the station runs");
+    let report = run.await.expect("the station does not panic");
+    assert_eq!(report.pending_events, 3);
+}

@@ -42,6 +42,10 @@ All notable changes to this project are recorded in this file. The format follow
 - `Delivery::Transmitted`: a session of the controlling role reports each ASDU it writes in an I
   frame, before any answer to it, so that a controlling station knows on which connection its request
   left. A controlled session does not report it. `Delivery` has the new variant `Transmitted`.
+- `Server::run_until(stop, grace)` stops a station in order: it accepts no more connections, each
+  connection sends the ASDUs it has taken and closes, and the connections still open after the grace
+  period are closed by force. It returns a `ShutdownReport`: the connections open at the stop, those
+  closed by force, and the events the station still held. `igs104-server --for` uses it.
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
 ### Fixed
@@ -60,6 +64,11 @@ All notable changes to this project are recorded in this file. The format follow
   still sent again.
 - A station renegotiates a TLS 1.2 session more than once with a client certificate: the station sets a
   session ID context, which OpenSSL needs for the second renegotiation.
+
+### Changed
+
+- Dropping the future of `Server::run` closes the connections of the station. They used to go on
+  serving after the server was dropped.
 
 ### Known gaps
 

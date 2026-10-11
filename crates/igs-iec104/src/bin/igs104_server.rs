@@ -89,15 +89,15 @@ async fn run(cli: Cli) -> Result<(), String> {
         }
     }
 
-    let served = server.run();
     match cli.duration {
+        // The station stops in order at the end of its duration: its connections send what they
+        // have and close, within one second.
         Some(seconds) => {
-            tokio::select! {
-                () = served => {}
-                () = sleep(Duration::from_secs(seconds)) => {}
-            }
+            let _ = server
+                .run_until(sleep(Duration::from_secs(seconds)), Duration::from_secs(1))
+                .await;
         }
-        None => served.await,
+        None => server.run().await,
     }
     Ok(())
 }

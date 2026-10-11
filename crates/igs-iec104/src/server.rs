@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
@@ -33,7 +34,8 @@ use igs_iec104_codec::formats::Cp56Time2a;
 use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
 use igs_iec104_link::{ConfigError, LinkConfig, Parameters, Rejection, Role, TransferState};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, watch, Notify};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time;
 
 use crate::clock;
@@ -213,10 +215,36 @@ struct Station<H> {
     common_address: CommonAddress,
     initialization: Coi,
     selection_timeout: Duration,
+    /// Set to true when the station stops (task U1): each connection sends what it has, then
+    /// closes.
+    stop: watch::Sender<bool>,
+}
+
+/// What a stop of the station did (task U1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShutdownReport {
+    /// The connections open when the stop began.
+    pub connections: usize,
+    /// The connections still open when the grace period ended, closed by force.
+    pub forced: usize,
+    /// The events the station still held when it stopped: not sent, or sent and not acknowledged
+    /// by the controlling station.
+    pub pending_events: usize,
+}
+
+/// A task that is aborted when its handle is dropped, so that a connection stopped by force
+/// closes its transport too.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// A controlled station, ready to run. Create it with [`Server::bind`], publish its points
-/// through [`Server::handle`], then run it with [`Server::run`].
+/// through [`Server::handle`], then run it with [`Server::run`], or with [`Server::run_until`] to
+/// stop it in order.
 ///
 /// # Examples
 ///
@@ -294,6 +322,7 @@ impl<H: Handler> Server<H> {
                 common_address: config.common_address,
                 initialization,
                 selection_timeout: config.selection_timeout,
+                stop: watch::Sender::new(false),
             }),
         })
     }
@@ -311,27 +340,73 @@ impl<H: Handler> Server<H> {
         }
     }
 
-    /// Accepts connections until the future is dropped. Connections already open finish on
-    /// their own when it is dropped.
+    /// Accepts connections and serves them, until the future is dropped. Dropping it closes the
+    /// connections at once; [`Server::run_until`] stops them in order.
     pub async fn run(self) {
+        let _ = self
+            .run_until(std::future::pending::<()>(), Duration::ZERO)
+            .await;
+    }
+
+    /// Accepts connections and serves them until `stop` completes, then stops the station (task
+    /// U1): it accepts no more connections, each connection sends the ASDUs it has already taken
+    /// and closes, and the connections still open after `grace` are closed by force. Returns what
+    /// the stop did. The station sends no STOPDT: that request belongs to the controlling station.
+    pub async fn run_until(
+        self,
+        stop: impl Future<Output = ()>,
+        grace: Duration,
+    ) -> ShutdownReport {
+        let mut connections = JoinSet::new();
+        tokio::pin!(stop);
         loop {
-            match self.listener.accept().await {
-                Ok((stream, _peer)) => match &self.tls {
-                    None => {
-                        tokio::spawn(serve(stream, Arc::clone(&self.station)));
-                    }
-                    Some(tls) => {
-                        tokio::spawn(serve_secured(
-                            tls.clone(),
-                            stream,
-                            Arc::clone(&self.station),
-                        ));
-                    }
+            tokio::select! {
+                () = &mut stop => break,
+                accepted = self.listener.accept() => match accepted {
+                    Ok((stream, _peer)) => match &self.tls {
+                        None => {
+                            connections.spawn(serve(stream, Arc::clone(&self.station)));
+                        }
+                        Some(tls) => {
+                            connections.spawn(serve_secured(
+                                tls.clone(),
+                                stream,
+                                Arc::clone(&self.station),
+                            ));
+                        }
+                    },
+                    Err(_) => time::sleep(ACCEPT_RETRY).await,
                 },
-                Err(_) => time::sleep(ACCEPT_RETRY).await,
+                // The connections that end are reaped, so that the set holds the open ones.
+                Some(_) = connections.join_next(), if !connections.is_empty() => {}
             }
         }
+        drop(self.listener);
+        while connections.try_join_next().is_some() {}
+        let open = connections.len();
+        self.station.stop.send_replace(true);
+        let forced = close_connections(&mut connections, grace).await;
+        let group = lock(&self.station.process.group);
+        ShutdownReport {
+            connections: open,
+            forced,
+            pending_events: group.carry.len().saturating_add(group.image.pending()),
+        }
     }
+}
+
+/// Waits up to `grace` for the connections to close, then closes the others by force. Returns the
+/// number closed by force. The set is empty on return.
+async fn close_connections(connections: &mut JoinSet<()>, grace: Duration) -> usize {
+    let _ = time::timeout(grace, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await;
+    while connections.try_join_next().is_some() {}
+    let forced = connections.len();
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
+    forced
 }
 
 /// Publishes the points of a station. Clones share the same image.
@@ -394,7 +469,13 @@ impl ServerHandle {
 /// handshake raises its security events.
 async fn serve_secured<H: Handler>(tls: Secure, stream: TcpStream, station: Arc<Station<H>>) {
     let t0 = station.link.parameters().t0;
-    if let Ok(secured) = secure_server(&tls, stream, t0).await {
+    let mut stopping = station.stop.subscribe();
+    let secured = tokio::select! {
+        secured = secure_server(&tls, stream, t0) => secured,
+        // The station stops during the handshake: the connection is not served.
+        _ = stopping.wait_for(|stop| *stop) => return,
+    };
+    if let Ok(secured) = secured {
         serve(secured, station).await;
     }
 }
@@ -404,7 +485,13 @@ async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Stati
     let (id, superseded) = lock(&station.process.group).join();
     let (commands_tx, commands_rx) = mpsc::channel::<Command>(CHANNEL);
     let (deliveries_tx, mut deliveries_rx) = mpsc::channel::<Delivery>(CHANNEL);
-    let transport = tokio::spawn(run(stream, station.link, commands_rx, deliveries_tx));
+    let mut transport = AbortOnDrop(tokio::spawn(run(
+        stream,
+        station.link,
+        commands_rx,
+        deliveries_tx,
+    )));
+    let mut stopping = station.stop.subscribe();
     let mut connection = Connection {
         station: &station,
         id,
@@ -443,6 +530,15 @@ async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Stati
                 break;
             }
             () = time::sleep(RETRY), if connection.started && connection.has_outgoing() => {}
+            _ = stopping.wait_for(|stop| *stop) => {
+                // The station stops (task U1): the ASDUs already taken are handed to the
+                // transport, no new event is taken, and closing the commands below closes the
+                // connection once the transport has sent them.
+                if let Some(sender) = commands.as_ref() {
+                    connection.flush(sender);
+                }
+                break;
+            }
         }
         connection.take_events();
         let Some(sender) = commands.as_ref() else {
@@ -458,7 +554,7 @@ async fn serve<S: Transport + 'static, H: Handler>(stream: S, station: Arc<Stati
     while let Some(delivery) = deliveries_rx.recv().await {
         connection.deliver(delivery);
     }
-    let _ = transport.await;
+    let _ = (&mut transport.0).await;
     let mut leftover = connection.unacknowledged;
     leftover.extend(connection.returned);
     leftover.extend(connection.pending);

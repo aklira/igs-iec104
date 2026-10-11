@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio::time::{sleep, timeout};
 
 use super::respond::{Handler, Operation, Refusal};
-use super::{serve, Group, Process, ServerHandle, Station};
+use super::{close_connections, serve, AbortOnDrop, Group, Process, ServerHandle, Station};
 use crate::procedures;
 use crate::process_image::{PointValue, ProcessImage};
 use crate::transport::{run, Command, Delivery};
@@ -72,6 +72,7 @@ fn station() -> (Arc<Station<Accept>>, ServerHandle) {
         common_address,
         initialization: Coi::new(0, false).expect("a cause"),
         selection_timeout: Duration::from_secs(30),
+        stop: tokio::sync::watch::Sender::new(false),
     });
     let handle = ServerHandle {
         common_address,
@@ -356,4 +357,43 @@ async fn a_stopped_connection_is_left_open_by_a_switchover() {
     let mut byte = [0u8; 1];
     let read = timeout(Duration::from_secs(1), stopped.read(&mut byte)).await;
     assert!(read.is_err(), "the stopped connection is not closed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_connections_still_open_after_the_grace_period_are_closed_by_force() {
+    let mut connections = tokio::task::JoinSet::new();
+    // One connection closes within the grace period, the other never does.
+    connections.spawn(sleep(Duration::from_millis(10)));
+    connections.spawn(std::future::pending::<()>());
+    let began = tokio::time::Instant::now();
+    let forced = close_connections(&mut connections, Duration::from_secs(1)).await;
+    assert_eq!(forced, 1);
+    assert!(connections.is_empty());
+    assert_eq!(began.elapsed(), Duration::from_secs(1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn connections_that_close_in_time_are_not_forced() {
+    let mut connections = tokio::task::JoinSet::new();
+    connections.spawn(sleep(Duration::from_millis(10)));
+    connections.spawn(sleep(Duration::from_millis(20)));
+    let began = tokio::time::Instant::now();
+    assert_eq!(
+        close_connections(&mut connections, Duration::from_secs(1)).await,
+        0
+    );
+    assert_eq!(began.elapsed(), Duration::from_millis(20));
+}
+
+#[tokio::test]
+async fn a_transport_is_aborted_with_its_connection() {
+    // The transport task of a connection holds the stream; dropping its guard, as a connection
+    // aborted by force does, ends the task and so drops the stream.
+    let (held, released) = tokio::sync::oneshot::channel::<()>();
+    let guard = AbortOnDrop(tokio::spawn(async move {
+        let _held = held;
+        std::future::pending::<()>().await;
+    }));
+    drop(guard);
+    assert!(released.await.is_err());
 }
