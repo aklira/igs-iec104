@@ -365,6 +365,50 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
   crates.io name reservation and publication, git push and tag.
 - Done when: maintainer approves and publishes 1.0.0.
 
+### Phase 6 — Extensions for the test bench orchestrator
+
+The MCP test bench orchestrator (`igs-iec104-mcp`, a separate repository) runs clients and servers of
+this library and must observe and control them. These tasks add what it needs. They change the public
+API: a maintainer reviews the API of U1 to U3 before it is implemented.
+
+**U1 — Graceful server shutdown** ⛔
+- Depends: S2, S3.
+- Produce: a way to stop a running `Server`: it stops accepting connections, closes its connections
+  within a deadline given by the caller, and `run` returns. The shape (a method of `ServerHandle`,
+  a future passed to `run`, or a token) is chosen at the API review.
+- Gate: API reviewed by a maintainer.
+- Done when: tests show that no connection is accepted after the stop, that open connections are
+  closed and `run` returns within the deadline, and that a stop with no connection returns at once.
+
+**U2 — Server connection and transfer events** ⛔
+- Depends: S2, S3.
+- Read: `104/sections/041_10_*` to `048_10.7_*` for the switchover.
+- Produce: an event stream of the server: a connection opened (with its peer address and an
+  identifier), a connection closed (with its reason), a change of transfer state (STARTDT, STOPDT),
+  and a connection superseded by a switchover (§10.7). The stream is bounded; when it is full, the
+  server does not wait: it counts the events it drops and reports the count.
+- Gate: API reviewed by a maintainer.
+- Done when: tests cover each event, a switchover between two connections, and an overflow that is
+  counted without slowing the station.
+
+**U3 — Client command policy on disconnect, and a transmission event** ⛔
+- Depends: T2, S3.
+- Produce: a client option to discard the requests still queued when the connection ends, instead of
+  sending them on the next connection; the discarded requests are reported in an event. An event
+  tells when a request is handed to the link and sent in an I frame. The default stays the current
+  behaviour unless the API review decides otherwise. `RedundantClient` keeps its rule: the
+  application decides what to send again (§10.5).
+- Gate: API reviewed by a maintainer.
+- Done when: tests show a request made while the connection is down discarded and reported with the
+  option, sent on the next connection without it, and a transmission event for every request sent.
+
+**U4 — Supported action matrix**
+- Depends: T2, S2.
+- Produce: `docs/capabilities.md`: for the client and the server, the procedures (§7) and the type
+  identifications they support, with their causes and qualifiers, and the test that covers each row;
+  what is not supported is listed as such. README links to it.
+- Done when: every row names a test that exists, and the matrix matches the code at the commit.
+
 ---
 
 ## 5. Definition of "ready to use" (1.0)
@@ -412,5 +456,9 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 | X1 TLS | [ ] |
 | X2 Documentation and examples | [x] |
 | X3 Release readiness ⛔ | [ ] |
+| U1 Graceful server shutdown ⛔ | [ ] |
+| U2 Server connection and transfer events ⛔ | [ ] |
+| U3 Client command policy on disconnect ⛔ | [ ] |
+| U4 Supported action matrix | [ ] |
 
-Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, L5, T2, T3, T4, S1–S4, S5, X1, X2, C7, X3.
+Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, L5, T2, T3, T4, S1–S4, S5, X1, X2, C7, X3. The tasks U1 to U4 can run before X3; U4 first, as it needs no API review.
