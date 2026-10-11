@@ -563,6 +563,7 @@ fn print_event(event: &Event) {
         Event::Connected => println!("connected"),
         Event::Disconnected(error) => println!("disconnected: {error}"),
         Event::ConnectFailed(error) => println!("connection failed: {error}"),
+        Event::Discarded(command) => println!("discarded: {command:?}"),
         Event::Delivery(Delivery::Asdu(asdu)) => println!("{}", describe(asdu)),
         Event::Delivery(Delivery::Rejected(rejection)) => println!("rejected: {rejection:?}"),
         Event::Delivery(Delivery::Transfer(state)) => println!("transfer: {state:?}"),

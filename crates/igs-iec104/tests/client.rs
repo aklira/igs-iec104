@@ -16,7 +16,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use igs_iec104::client::{Client, ClientConfig, Event, ReconnectPolicy};
+use igs_iec104::client::{Client, ClientConfig, Event, OfflineRequests, ReconnectPolicy};
 use igs_iec104::{run_shared, Command, Delivery};
 use igs_iec104_codec::asdu::{Asdu, Body, InformationObject, Objects};
 use igs_iec104_codec::elements::{
@@ -539,4 +539,92 @@ async fn the_deliveries_of_a_connection_come_before_its_disconnection() {
         outcome, COUNT,
         "every ASDU of the connection arrives before its disconnection"
     );
+}
+
+/// A client whose first connection is closed by the station, with a long first reconnect delay so
+/// that the test can make a request while the client has no connection.
+async fn client_after_a_drop(policy: OfflineRequests) -> Client {
+    let mut config = config(serve(true).await).with_offline_requests(policy);
+    config.reconnect.initial = Duration::from_millis(300);
+    let mut client = Client::connect(config);
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if let Event::Disconnected(_) = client.next_event().await.expect("the client runs") {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the first connection ends");
+    client
+}
+
+/// The events of the client until the transfer starts, or for `wait` if it does not.
+async fn events_until_started(client: &mut Client, wait: Duration) -> Vec<Event> {
+    let mut seen = Vec::new();
+    let _ = timeout(wait, async {
+        loop {
+            let event = client.next_event().await.expect("the client runs");
+            let started = matches!(
+                event,
+                Event::Delivery(Delivery::Transfer(TransferState::Started))
+            );
+            seen.push(event);
+            if started {
+                return;
+            }
+        }
+    })
+    .await;
+    seen
+}
+
+#[tokio::test]
+async fn a_request_made_without_a_connection_waits_for_the_next_one_by_default() {
+    let mut client = client_after_a_drop(OfflineRequests::Queue).await;
+    client.start_data_transfer().await.expect("queued");
+    let seen = events_until_started(&mut client, Duration::from_secs(5)).await;
+    assert!(
+        matches!(
+            seen.last(),
+            Some(Event::Delivery(Delivery::Transfer(TransferState::Started)))
+        ),
+        "the queued STARTDT is sent on the next connection: {seen:?}"
+    );
+    assert!(!seen
+        .iter()
+        .any(|event| matches!(event, Event::Discarded(_))));
+}
+
+#[tokio::test]
+async fn a_request_made_without_a_connection_is_discarded_with_the_discard_policy() {
+    let mut client = client_after_a_drop(OfflineRequests::Discard).await;
+    client.start_data_transfer().await.expect("queued");
+    let seen = events_until_started(&mut client, Duration::from_secs(1)).await;
+    let discarded = seen
+        .iter()
+        .position(|event| matches!(event, Event::Discarded(Command::StartDt)))
+        .expect("the STARTDT is reported as discarded");
+    let connected = seen
+        .iter()
+        .position(|event| matches!(event, Event::Connected))
+        .expect("the client connects again");
+    assert!(
+        discarded < connected,
+        "discarded before the connection: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|event| matches!(
+            event,
+            Event::Delivery(Delivery::Transfer(TransferState::Started))
+        )),
+        "the discarded STARTDT is not sent: {seen:?}"
+    );
+    // A request made on the new connection is sent.
+    client.start_data_transfer().await.expect("queued");
+    let seen = events_until_started(&mut client, Duration::from_secs(5)).await;
+    assert!(matches!(
+        seen.last(),
+        Some(Event::Delivery(Delivery::Transfer(TransferState::Started)))
+    ));
 }

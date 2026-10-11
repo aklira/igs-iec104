@@ -37,7 +37,7 @@ pub mod server;
 pub mod tls;
 pub mod transport;
 
-pub use client::{Client, ClientConfig, ClientError, Event, ReconnectPolicy};
+pub use client::{Client, ClientConfig, ClientError, Event, OfflineRequests, ReconnectPolicy};
 pub use error::TransportError;
 pub use procedures::ProcedureError;
 pub use transport::{connect, run, run_shared, Command, Delivery, Transport, DEFAULT_PORT};

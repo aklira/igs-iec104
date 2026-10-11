@@ -35,6 +35,10 @@ All notable changes to this project are recorded in this file. The format follow
 - `igs_iec104::answer::judge` tells whether an ASDU of a station is the answer to a request: its
   confirmation or termination, or a refusal (a negative confirmation, or a cause of 44 to 47). The client
   binary `igs104-client` uses it, and now matches the information object address of the answer too.
+- `ClientConfig::with_offline_requests`: with `OfflineRequests::Discard`, the client drops the requests
+  still queued when a connection ends and those made until the next connection, and reports each one
+  as `Event::Discarded`, instead of sending them on the next connection. `OfflineRequests::Queue`, the
+  default, keeps the former behaviour. `Event` has the new variant `Discarded`.
 - An interop bench in `bench/`, with a client matrix against a reference server.
 
 ### Fixed

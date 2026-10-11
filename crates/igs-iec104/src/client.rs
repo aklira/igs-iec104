@@ -9,7 +9,8 @@
 //! and connects again after a drop. The delay between two attempts starts at the
 //! policy's `initial` and doubles up to its `max`; it returns to `initial` after
 //! a connection that was established. The commands given while the connection is
-//! down wait in the command channel for the next connection.
+//! down wait in the command channel for the next connection, unless the configuration discards
+//! them ([`OfflineRequests::Discard`]).
 //!
 //! Every channel is bounded. A caller waits when the command channel is full, and
 //! the supervisor waits when the event channel is full: back-pressure reaches the
@@ -19,6 +20,7 @@
 //! tells whether a delivery is the answer to a request.
 
 use std::fmt;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -51,6 +53,18 @@ impl Default for ReconnectPolicy {
     }
 }
 
+/// What the client does with a request made while it has no connection (task U3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OfflineRequests {
+    /// The request waits in the command channel and is sent on the next connection.
+    #[default]
+    Queue,
+    /// The request is dropped and reported with [`Event::Discarded`]: the requests still queued
+    /// when a connection ends, and those made until the next connection is established. A request
+    /// made while the next connection opens may still be sent on it.
+    Discard,
+}
+
 /// The TLS options of a client (task X1): the backend, and the name that the certificate of the
 /// station must carry.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +90,8 @@ pub struct ClientConfig {
     pub capacity: usize,
     /// The TLS options, or `None` for a plain TCP connection.
     pub tls: Option<ClientTls>,
+    /// What happens to a request made while the client has no connection.
+    pub offline_requests: OfflineRequests,
     link: LinkConfig,
 }
 
@@ -88,6 +104,7 @@ impl ClientConfig {
             reconnect: ReconnectPolicy::default(),
             capacity: 32,
             tls: None,
+            offline_requests: OfflineRequests::Queue,
             link: LinkConfig::with_defaults(Role::Controlling),
         }
     }
@@ -100,6 +117,13 @@ impl ClientConfig {
             backend,
             host: host.into(),
         });
+        self
+    }
+
+    /// Sets what happens to a request made while the client has no connection.
+    #[must_use]
+    pub fn with_offline_requests(mut self, policy: OfflineRequests) -> Self {
+        self.offline_requests = policy;
         self
     }
 
@@ -125,6 +149,9 @@ pub enum Event {
     Disconnected(TransportError),
     /// A connection attempt failed. The client tries again after the delay.
     ConnectFailed(TransportError),
+    /// A request dropped because the client had no connection, with
+    /// [`OfflineRequests::Discard`]. It was not sent.
+    Discarded(Command),
     /// A delivery of the session: an ASDU, a rejected command, or a change of the
     /// state of the data transfer.
     Delivery(Delivery),
@@ -201,7 +228,8 @@ impl From<ProcedureError> for ClientError {
 /// What the results of the request methods mean:
 ///
 /// - `Ok(())` means the request was accepted into the command channel. It is not sent yet, and it is
-///   not confirmed. A request made while the connection is down waits for the next connection.
+///   not confirmed. A request made while the connection is down waits for the next connection, or
+///   is dropped and reported as [`Event::Discarded`] with [`OfflineRequests::Discard`].
 /// - The answer arrives as a [`Delivery::Asdu`] event. [`Delivery::Rejected`] reports a command that
 ///   was not carried out.
 /// - When the connection ends, the answer to a request of that connection may never arrive.
@@ -489,6 +517,42 @@ async fn open(config: &ClientConfig, t0: Duration) -> Result<BoxedTransport, Tra
     }
 }
 
+/// Runs `work` while the client has no connection. With `discard`, the requests that arrive
+/// meanwhile are dropped and reported. `None` when the client is gone.
+async fn offline<T>(
+    work: impl Future<Output = T>,
+    discard: bool,
+    commands: &mut mpsc::Receiver<Command>,
+    events: &mpsc::Sender<Event>,
+) -> Option<T> {
+    if !discard {
+        return Some(work.await);
+    }
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            output = &mut work => return Some(output),
+            request = commands.recv() => {
+                let command = request?;
+                events.send(Event::Discarded(command)).await.ok()?;
+            }
+        }
+    }
+}
+
+/// Drops and reports the requests waiting in the command channel. False when the client is gone.
+async fn discard_queued(
+    commands: &mut mpsc::Receiver<Command>,
+    events: &mpsc::Sender<Event>,
+) -> bool {
+    while let Ok(command) = commands.try_recv() {
+        if events.send(Event::Discarded(command)).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
 /// Keeps one connection up, for as long as the client exists.
 async fn supervise(
     config: ClientConfig,
@@ -497,11 +561,18 @@ async fn supervise(
 ) {
     let link = config.link;
     let t0 = link.parameters().t0;
+    let discard = config.offline_requests == OfflineRequests::Discard;
     let mut delay = config.reconnect.initial;
     loop {
-        match open(&config, t0).await {
+        let Some(opened) = offline(open(&config, t0), discard, &mut commands, &events).await else {
+            break;
+        };
+        match opened {
             Ok(stream) => {
                 delay = config.reconnect.initial;
+                if discard && !discard_queued(&mut commands, &events).await {
+                    break;
+                }
                 if events.send(Event::Connected).await.is_err() {
                     break;
                 }
@@ -527,6 +598,9 @@ async fn supervise(
                         if events.send(Event::Disconnected(error)).await.is_err() {
                             break;
                         }
+                        if discard && !discard_queued(&mut commands, &events).await {
+                            break;
+                        }
                     }
                 }
             }
@@ -536,8 +610,8 @@ async fn supervise(
                 }
             }
         }
-        tokio::time::sleep(delay).await;
-        if events.is_closed() {
+        let waited = offline(tokio::time::sleep(delay), discard, &mut commands, &events).await;
+        if waited.is_none() || events.is_closed() {
             break;
         }
         delay = delay.saturating_mul(2).min(config.reconnect.max);
