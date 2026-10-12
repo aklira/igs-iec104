@@ -85,7 +85,12 @@ fn start_station(seconds: u64) -> Station {
 
 /// Connects to the station, once it listens, and starts the data transfer.
 async fn connect(address: SocketAddr) -> Client {
-    let mut client = Client::connect(ClientConfig::new(address, CommonAddress::new(STATION)));
+    connect_with(ClientConfig::new(address, CommonAddress::new(STATION))).await
+}
+
+/// Like [`connect`], with the configuration given (a TLS client, for example).
+async fn connect_with(config: ClientConfig) -> Client {
+    let mut client = Client::connect(config);
     timeout(Duration::from_secs(10), async {
         loop {
             if let Event::Connected = client.next_event().await.expect("the client runs") {
@@ -294,4 +299,116 @@ async fn the_station_serves_only_the_points_of_its_toml_file() {
         }
     }
     assert_eq!(types, ["M_SP_NA_1"]);
+}
+
+/// A TLS client of the station: its certificate, and the roots of the fixtures (the test certificates of the
+/// crate, `tests/fixtures/tls`).
+#[cfg(feature = "openssl")]
+fn tls_client() -> igs_iec104::tls::Secure {
+    use std::sync::Arc;
+
+    use igs_iec104::tls::events::{SecurityEvent, SecurityEvents};
+    use igs_iec104::tls::openssl_backend::OpensslBackend;
+    use igs_iec104::tls::settings::{Identity, TlsSettings, TrustAnchors};
+    use igs_iec104::tls::Secure;
+    use openssl::pkey::PKey;
+    use openssl::x509::X509;
+
+    struct Quiet;
+    impl SecurityEvents for Quiet {
+        fn raise(&self, _event: SecurityEvent, _detail: &str) {}
+    }
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tls");
+    let read = |name: &str| std::fs::read(format!("{fixtures}/{name}")).expect("a fixture");
+    let der = |pem: &[u8]| -> Vec<Vec<u8>> {
+        X509::stack_from_pem(pem)
+            .expect("certificates")
+            .iter()
+            .map(|certificate| certificate.to_der().expect("DER"))
+            .collect()
+    };
+    let chain = der(&read("client.pem"));
+    let key = PKey::private_key_from_pem(&read("client.key"))
+        .expect("a key")
+        .private_key_to_der()
+        .expect("DER of the key");
+    let identity = Identity::new(chain, key, &Quiet).expect("the identity");
+    let trust = TrustAnchors::new(der(&read("roots.pem"))).expect("the roots");
+    let settings = TlsSettings::new(identity, trust, Arc::new(Quiet));
+    Secure::new(OpensslBackend::new(&settings).expect("the backend"))
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn the_station_serves_tls_to_a_client_that_presents_a_certificate() {
+    // The station with its identity, the roots of the client certificates (IEC 62351-3): the client
+    // starts the data transfer over TLS.
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tls");
+    let station = start_station_with(
+        60,
+        &[
+            "--tls-roots",
+            &format!("{fixtures}/roots.pem"),
+            "--tls-certificate",
+            &format!("{fixtures}/server.pem"),
+            "--tls-key",
+            &format!("{fixtures}/server.key"),
+        ],
+    );
+    let config = ClientConfig::new(station.address, CommonAddress::new(STATION))
+        .with_tls(tls_client(), "localhost");
+    let _client = connect_with(config).await;
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn a_plain_client_gets_no_transfer_from_a_tls_station() {
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tls");
+    let station = start_station_with(
+        60,
+        &[
+            "--tls-roots",
+            &format!("{fixtures}/roots.pem"),
+            "--tls-certificate",
+            &format!("{fixtures}/server.pem"),
+            "--tls-key",
+            &format!("{fixtures}/server.key"),
+        ],
+    );
+    let mut client = Client::connect(ClientConfig::new(
+        station.address,
+        CommonAddress::new(STATION),
+    ));
+    client.start_data_transfer().await.expect("the client runs");
+    // The station does not speak plain IEC 60870-5-104 on a TLS port: no transfer starts.
+    let started = timeout(Duration::from_secs(5), async {
+        loop {
+            match client.next_event().await {
+                Some(Event::Delivery(Delivery::Transfer(TransferState::Started))) => return true,
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    })
+    .await;
+    assert!(
+        !matches!(started, Ok(true)),
+        "a plain client started a transfer"
+    );
+}
+
+#[test]
+fn the_tls_options_come_together() {
+    let station = Process::new(env!("CARGO_BIN_EXE_igs104-server"))
+        .args([
+            "--bind",
+            "127.0.0.1:0",
+            "--tls-roots",
+            "/nonexistent/roots.pem",
+        ])
+        .output()
+        .expect("the server runs");
+    assert!(!station.status.success());
+    let message = String::from_utf8_lossy(&station.stderr);
+    assert!(message.contains("need --tls-roots"), "{message}");
 }

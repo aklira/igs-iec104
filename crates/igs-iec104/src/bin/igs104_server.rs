@@ -14,6 +14,9 @@
 mod handler;
 #[path = "igs104_server/points.rs"]
 mod points;
+#[cfg(feature = "openssl")]
+#[path = "igs104_server/tls.rs"]
+mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -46,6 +49,35 @@ struct Cli {
     /// built-in demo points are served.
     #[arg(short, long, value_name = "FILE")]
     points: Option<PathBuf>,
+    /// The trust anchors (PEM) of the client certificates. With the other two TLS options, the station
+    /// serves TLS, and requires a client certificate signed by one of them (IEC 62351-3).
+    #[arg(long, value_name = "FILE")]
+    tls_roots: Option<PathBuf>,
+    /// The certificate chain (PEM) of the station, for TLS. Needs --tls-roots and --tls-key.
+    #[arg(long, value_name = "FILE")]
+    tls_certificate: Option<PathBuf>,
+    /// The private key (PEM) of the station, for TLS. Needs --tls-roots and --tls-certificate.
+    #[arg(long, value_name = "FILE")]
+    tls_key: Option<PathBuf>,
+}
+
+/// The TLS backend of the station, when the three TLS options are given; none of them means no TLS.
+fn secure(cli: &Cli) -> Result<Option<igs_iec104::tls::Secure>, String> {
+    match (&cli.tls_roots, &cli.tls_certificate, &cli.tls_key) {
+        (None, None, None) => Ok(None),
+        #[cfg(feature = "openssl")]
+        (Some(roots), Some(certificate), Some(key)) => {
+            tls::backend(roots, certificate, key).map(Some)
+        }
+        #[cfg(not(feature = "openssl"))]
+        (Some(_), Some(_), Some(_)) => {
+            Err("this build has no TLS: build with the openssl feature".to_string())
+        }
+        _ => Err(
+            "the TLS options need --tls-roots, --tls-certificate and --tls-key together"
+                .to_string(),
+        ),
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -75,7 +107,11 @@ async fn run(cli: Cli) -> Result<(), String> {
     };
     points::validate(&points).map_err(|error| error.to_string())?;
 
-    let server = Server::bind(ServerConfig::new(cli.bind, common), Demo::new(&points))
+    let mut config = ServerConfig::new(cli.bind, common);
+    if let Some(tls) = secure(&cli)? {
+        config = config.with_tls(tls);
+    }
+    let server = Server::bind(config, Demo::new(&points))
         .await
         .map_err(|error| error.to_string())?;
     let address = server.local_addr().map_err(|error| error.to_string())?;

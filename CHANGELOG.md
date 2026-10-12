@@ -7,6 +7,8 @@ All notable changes to this project are recorded in this file. The format follow
 
 ### Added
 
+- `igs104-server` serves TLS when it is given `--tls-roots`, `--tls-certificate` and `--tls-key`: the client
+  certificate is required, and each security event of a handshake is printed (`docs/igs104-server.md`).
 - `igs-iec104-codec`: APCI framing of the I, S and U formats; the ASDUs of the 104 profile, with
   their information elements and time tags; the profile rules. The profile values are generated
   from the profile data.

@@ -2,7 +2,7 @@
 
 `igs104-server` is a controlled station of IEC 60870-5-104 for trials and for the interop bench. It serves
 a set of points, changes their values as a simulation says, and accepts the commands of the points that
-take them. It is not a production station: it has no TLS option.
+take them. It is not a production station: its TLS option is for trials and the interop bench (see below).
 
 ## Running it
 
@@ -22,6 +22,14 @@ cargo run -p igs-iec104 --bin igs104-server -- --bind 127.0.0.1:2404 -c 1 --poin
 | `-c`, `--common-address N` | the common address of the station, 1 to 65534 (65535 is the global address and is refused) | `1` |
 | `--for SECONDS` | stop after this many seconds; without it the station runs until the process is stopped | none |
 | `-p`, `--points FILE` | a TOML file with the points of the station | the built-in demo points |
+| `--tls-roots FILE` | the trust anchors (PEM) of the client certificates | none (no TLS) |
+| `--tls-certificate FILE` | the certificate chain (PEM) of the station | none (no TLS) |
+| `--tls-key FILE` | the private key (PEM) of the station | none (no TLS) |
+
+The three TLS options come together: with them, the station serves TLS (IEC 62351-3, with the OpenSSL backend)
+and requires a client certificate signed by one of the trust anchors. A plain client gets no transfer from a
+TLS station. Each security event of a handshake is printed as it is raised, as `security event MNEMONIC
+(SEVERITY): detail`. A build without the `openssl` feature refuses the TLS options.
 
 The station prints its address when it starts, and a line for each command it accepts. A points file that
 cannot be read or checked stops the station at start, with the reason.
@@ -81,5 +89,4 @@ time of the change, and an interrogation reports it with the plain type M_ME_NC_
 
 ## Not yet
 
-The station has no TLS option, and it does not reload its points file while it runs: restart it to change
-the points.
+The station does not reload its points file while it runs: restart it to change the points.
