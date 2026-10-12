@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_asdu_is_reported_and_the_stream_goes_on() {
+    fn an_unsupported_asdu_is_kept_and_the_stream_goes_on() {
         // M_SP_TA_1 (type 2) inside an I frame: the frame is cut, decoding it fails.
         let unsupported = [
             vec![START, 0x0E, 0x00, 0x00, 0x00, 0x00],
@@ -630,10 +630,23 @@ mod tests {
         let stream = [unsupported.clone(), sample_frames()[1].clone()].concat();
         let frames = feed(&[&stream]).expect("framing is fine");
         assert_eq!(frames.len(), 2);
-        assert!(matches!(
-            Apdu::decode(&frames[0]),
-            Err(DecodeError::UnsupportedTypeId { type_code: 2, .. })
-        ));
+        let Ok(Apdu::Information { asdu, .. }) = Apdu::decode(&frames[0]) else {
+            panic!("the I frame with an unsupported type is kept as an information frame");
+        };
+        assert_eq!(
+            asdu.body.type_id(),
+            crate::generated::profile::TypeId::M_SP_TA_1
+        );
+        assert_eq!(asdu.body.len(), 1);
+        assert_eq!(
+            asdu.body,
+            crate::asdu::Body::Unsupported {
+                type_id: crate::generated::profile::TypeId::M_SP_TA_1,
+                number: 1,
+                sequence: false,
+                octets: vec![0x01, 0x00, 0x00, 0x01],
+            }
+        );
         assert_eq!(
             Apdu::decode(&frames[1]),
             Ok(Apdu::Supervisory {

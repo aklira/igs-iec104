@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use igs_iec104_codec::asdu::{Asdu, Body, InformationObject, Objects, Timed};
 use igs_iec104_codec::elements::{
-    Bcr, Bsi, Coi, CounterFreeze, Qcc, Qds, Qoc, Qoi, Qos, Sco, ShortFloat, Siq,
+    Bcr, Bsi, Coi, CounterFreeze, Qcc, Qds, Qoc, Qoi, Qos, Qrp, Sco, ShortFloat, Siq,
 };
 use igs_iec104_codec::formats::Cp56Time2a;
 use igs_iec104_codec::generated::profile::TypeId;
@@ -107,6 +107,14 @@ impl Handler for Judge {
     }
 
     fn clock_sync(&self, _time: Cp56Time2a) -> Result<(), Refusal> {
+        if self.reject {
+            Err(Refusal::Rejected)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn reset_process(&self, _qualifier: Qrp) -> Result<(), Refusal> {
         if self.reject {
             Err(Refusal::Rejected)
         } else {
@@ -361,6 +369,79 @@ fn a_counter_interrogation_answers_the_counters_and_refuses_freezing() {
         summary(&replies),
         vec![(
             TypeId::C_CI_NA_1,
+            cause::ACTIVATION_CONFIRMATION,
+            true,
+            STATION
+        )]
+    );
+}
+
+#[test]
+fn a_test_command_outside_the_profile_is_mirrored_with_cause_44_and_nothing_else() {
+    // C_TS_NA_1 (104) is outside the 104 profile (the test command of 104 carries a time tag, C_TS_TA_1).
+    // The station mirrors the ASDU with the unknown type cause, and its octets are repeated as received.
+    let mut responder = Responder::new(ca(STATION), TIMEOUT);
+    let octets = vec![0, 0, 0, 0x55, 0xAA];
+    let body = Body::Unsupported {
+        type_id: TypeId::C_TS_NA_1,
+        number: 1,
+        sequence: false,
+        octets,
+    };
+    let asdu = request(cause::ACTIVATION, body.clone());
+    let replies = responder.respond(
+        &Judge::accepting(),
+        &image(),
+        &asdu,
+        Instant::now(),
+        time(1),
+    );
+    assert_eq!(
+        summary(&replies),
+        vec![(TypeId::C_TS_NA_1, cause::UNKNOWN_TYPE_ID, true, STATION)]
+    );
+    assert_eq!(replies[0].body, body);
+}
+
+#[test]
+fn a_reset_process_command_is_confirmed_once_and_refused_when_the_handler_refuses_it() {
+    // The confirmation only: the profile allows no termination for C_RP_NA_1.
+    let mut responder = Responder::new(ca(STATION), TIMEOUT);
+    let asdu = request(
+        cause::ACTIVATION,
+        Body::C_RP_NA_1(one(0, Qrp::GENERAL_RESET)),
+    );
+    let replies = responder.respond(
+        &Judge::accepting(),
+        &image(),
+        &asdu,
+        Instant::now(),
+        time(1),
+    );
+    assert_eq!(
+        summary(&replies),
+        vec![(
+            TypeId::C_RP_NA_1,
+            cause::ACTIVATION_CONFIRMATION,
+            false,
+            STATION
+        )]
+    );
+
+    let refused = responder.respond(
+        &Judge {
+            unknown: None,
+            reject: true,
+        },
+        &image(),
+        &asdu,
+        Instant::now(),
+        time(1),
+    );
+    assert_eq!(
+        summary(&refused),
+        vec![(
+            TypeId::C_RP_NA_1,
             cause::ACTIVATION_CONFIRMATION,
             true,
             STATION

@@ -32,10 +32,11 @@ MATRIX = [
     ("read", "passed", None),
     ("clock", "passed", "confirmed"),
     ("test", "passed", "confirmed"),
-    # Known gap (docs/ai-log/S5.md): the station does not implement the reset process command, and
-    # it closes the connection on a test command without a time tag (C_TS_NA_1, outside the 104 profile).
+    # The station does not implement the reset process command: it refuses it (PROVENANCE.md, D-031).
     ("reset", "refused", "cause 7"),
-    ("test-without-time-tag", "timeout", "no answer"),
+    # A test command without time tag is outside the 104 profile: the station mirrors it with cause 44 and
+    # keeps the connection (PROVENANCE.md, D-031).
+    ("test-without-time-tag", "refused", "cause 44"),
     ("single", "passed", "terminated"),
     ("double", "passed", "terminated"),
     ("normalized", "passed", "terminated"),

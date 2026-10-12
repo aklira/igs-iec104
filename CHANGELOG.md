@@ -7,6 +7,12 @@ All notable changes to this project are recorded in this file. The format follow
 
 ### Added
 
+- `Handler::reset_process`: the application judges a reset process command (C_RP_NA_1). The default refuses it, as
+  before (D-031).
+- `Body::Unsupported`: an ASDU of a type outside the 104 profile is kept as received, and the station mirrors it
+  with cause 44 (D-031). `Body` gains this variant, so an exhaustive match on `Body` must add an arm for it.
+- `igs104-client` takes the TLS options of the station (`--tls-roots`, `--tls-certificate`, `--tls-key`, `--tls-host`).
+
 - `igs104-server` serves TLS when it is given `--tls-roots`, `--tls-certificate` and `--tls-key`: the client
   certificate is required, and each security event of a handshake is printed (`docs/igs104-server.md`).
 - `igs-iec104-codec`: APCI framing of the I, S and U formats; the ASDUs of the 104 profile, with

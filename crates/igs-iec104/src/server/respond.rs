@@ -24,7 +24,7 @@ use igs_iec104_codec::asdu::{
     validate_profile, Asdu, Body, Direction, InformationObject, Objects, ProfileError, Timed,
 };
 use igs_iec104_codec::elements::{
-    Coi, CounterFreeze, Dco, Nva, Qoi, Qos, Rco, Sco, ShortFloat, Sva,
+    Coi, CounterFreeze, Dco, Nva, Qoi, Qos, Qrp, Rco, Sco, ShortFloat, Sva,
 };
 use igs_iec104_codec::formats::Cp56Time2a;
 use igs_iec104_codec::generated::profile::TypeId;
@@ -62,6 +62,13 @@ pub trait Handler: Send + Sync + 'static {
     /// default accepts it: the station keeps its own clock.
     fn clock_sync(&self, _time: Cp56Time2a) -> Result<(), Refusal> {
         Ok(())
+    }
+
+    /// Judges a reset process command (101 7.3.4.6, in the profile of 104) with its qualifier. The
+    /// default refuses it: a station that does not reset its process says so with a negative
+    /// confirmation.
+    fn reset_process(&self, _qualifier: Qrp) -> Result<(), Refusal> {
+        Err(Refusal::Rejected)
     }
 }
 
@@ -163,6 +170,7 @@ impl Responder {
             Body::C_CI_NA_1(objects) => self.counters(asdu, objects, image),
             Body::C_RD_NA_1(objects) => self.read(asdu, objects, image),
             Body::C_CS_NA_1(objects) => self.clock_sync(handler, asdu, objects, clock),
+            Body::C_RP_NA_1(objects) => self.reset(handler, asdu, objects),
             Body::C_TS_TA_1(_) => answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
                 .into_iter()
                 .collect(),
@@ -316,6 +324,25 @@ impl Responder {
                     .into_iter()
                     .collect()
             }
+            Err(_) => refuse_activation(self.station, asdu),
+        }
+    }
+
+    /// A reset process command: its confirmation, which the profile allows without a termination (cause 10
+    /// is not among the causes of C_RP_NA_1). A refused reset is a negative confirmation.
+    fn reset<H: Handler + ?Sized>(
+        &self,
+        handler: &H,
+        asdu: &Asdu,
+        objects: &Objects<Qrp>,
+    ) -> Vec<Asdu> {
+        let Some((_, qualifier)) = single_object(objects) else {
+            return refuse_activation(self.station, asdu);
+        };
+        match handler.reset_process(*qualifier) {
+            Ok(()) => answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
+                .into_iter()
+                .collect(),
             Err(_) => refuse_activation(self.station, asdu),
         }
     }

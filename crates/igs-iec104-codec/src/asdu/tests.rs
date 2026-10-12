@@ -318,20 +318,24 @@ fn d005_querylog_is_not_sent_with_request() {
 }
 
 #[test]
-fn type_outside_the_profile_is_rejected_with_its_octets() {
-    // M_SP_TA_1 (type 2) is in the catalogue but not in the profile.
-    let bytes = one_object(
-        TypeId::M_SP_TA_1,
-        cause::SPONTANEOUS,
-        &[ADDRESS_ONE, SIQ, CP16].concat(),
-    );
+fn type_outside_the_profile_is_kept_with_its_octets_and_written_back_as_received() {
+    // M_SP_TA_1 (type 2) is in the catalogue but not in the profile: its layout is not read, and the
+    // ASDU is written back unchanged (the station mirrors it with cause 44).
+    let octets = [ADDRESS_ONE, SIQ, CP16].concat();
+    let bytes = one_object(TypeId::M_SP_TA_1, cause::SPONTANEOUS, &octets);
+    let asdu = Asdu::decode(&bytes).expect("the ASDU is kept");
     assert_eq!(
-        Asdu::decode(&bytes),
-        Err(DecodeError::UnsupportedTypeId {
-            type_code: 2,
-            raw: bytes.clone(),
-        })
+        asdu.body,
+        Body::Unsupported {
+            type_id: TypeId::M_SP_TA_1,
+            number: 1,
+            sequence: false,
+            octets: octets.clone(),
+        }
     );
+    let mut written = vec![0u8; bytes.len()];
+    let length = asdu.encode(&mut written).expect("it is written");
+    assert_eq!(written[..length], bytes[..]);
     assert_eq!(
         validate_type(TypeId::M_SP_TA_1, Direction::Monitor),
         Err(ProfileError::TypeNotInProfile(TypeId::M_SP_TA_1))

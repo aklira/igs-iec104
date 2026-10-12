@@ -33,6 +33,19 @@ macro_rules! asdu_bodies {
                 #[doc = concat!("The objects of ", stringify!($type_id), ".")]
                 $type_id(Objects<$value>),
             )*
+            /// The objects of a type identification outside the 104 profile, kept as received. Their
+            /// layout is unknown to the station, so the octets are kept as they are: the station mirrors
+            /// them with cause 44 (101 7.2.3, §8.9), and the connection stays open.
+            Unsupported {
+                /// The type identification, outside the profile.
+                type_id: TypeId,
+                /// The number of objects, as the variable structure qualifier of the ASDU says.
+                number: u8,
+                /// The SQ bit of the variable structure qualifier.
+                sequence: bool,
+                /// The octets of the objects, as received.
+                octets: Vec<u8>,
+            },
         }
 
         impl Body {
@@ -40,6 +53,7 @@ macro_rules! asdu_bodies {
             pub fn type_id(&self) -> TypeId {
                 match self {
                     $( Self::$type_id(_) => TypeId::$type_id, )*
+                    Self::Unsupported { type_id, .. } => *type_id,
                 }
             }
 
@@ -47,6 +61,7 @@ macro_rules! asdu_bodies {
             pub fn len(&self) -> usize {
                 match self {
                     $( Self::$type_id(objects) => objects.len(), )*
+                    Self::Unsupported { number, .. } => usize::from(*number),
                 }
             }
 
@@ -59,6 +74,7 @@ macro_rules! asdu_bodies {
             pub fn is_sequence(&self) -> bool {
                 match self {
                     $( Self::$type_id(objects) => objects.is_sequence(), )*
+                    Self::Unsupported { sequence, .. } => *sequence,
                 }
             }
 
@@ -67,6 +83,8 @@ macro_rules! asdu_bodies {
             pub fn first_address(&self) -> Option<InformationObjectAddress> {
                 match self {
                     $( Self::$type_id(objects) => objects.first_address(), )*
+                    // The layout is unknown: the address is not read.
+                    Self::Unsupported { .. } => None,
                 }
             }
 
@@ -74,6 +92,15 @@ macro_rules! asdu_bodies {
             pub(crate) fn encode(&self, dst: &mut [u8]) -> Result<usize, EncodeError> {
                 match self {
                     $( Self::$type_id(objects) => objects.encode(dst), )*
+                    Self::Unsupported { octets, .. } => {
+                        let available = dst.len();
+                        let target = dst.get_mut(..octets.len()).ok_or(EncodeError::BufferTooSmall {
+                            needed: octets.len(),
+                            available,
+                        })?;
+                        target.copy_from_slice(octets);
+                        Ok(octets.len())
+                    }
                 }
             }
 

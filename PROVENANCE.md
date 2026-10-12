@@ -391,6 +391,25 @@ substituted time. The API names it `substituted`.
 - **Open**: the severity of TLS_DISALLOWED_CIPHER. Annex A prints it as a warning; clause 7.3 calls the event an
   alarm. The code keeps the warning as printed (QUESTIONS.md, Q-030).
 
+### D-031 — A type outside the 104 profile is mirrored with cause 44, and the connection stays open
+
+- **Decision**: an ASDU whose type identification is in the catalogue but outside the 104 profile is decoded as
+  `Body::Unsupported`: its VSQ and its octets are kept as received, and it is written back unchanged. The station
+  answers it with a negative answer of cause 44 (unknown type identification), with the same body (clause 8.9 and
+  the cause 44 of 101 7.2.3). The connection stays open. A malformed ASDU of an in-profile type still ends the
+  connection (D-013).
+- **Reset process (C_RP_NA_1, type 105, in the profile)**: the station calls the handler's `reset_process` with the
+  qualifier. The default handler refuses, so the demonstration station refuses it with a negative confirmation of
+  cause 7, as before. An application that resets its process accepts it, and the station confirms it positively. The
+  profile allows no termination for this type (cause 10 is not among its causes).
+- **Sources**: 62351-3 and 104 profile data (`profile_104.yaml`: C_TS_NA_1 `in_104_profile: false`, C_RP_NA_1
+  `in_104_profile: true`); 101 7.2.3 and 7.3.4.6 for the causes and the reset.
+- **Confidence**: high for the cause 44 answer (the station's rule of profile violations, S2); medium for keeping the
+  connection open rather than closing it, which changes the decision of D-013 for out-of-profile types only.
+- **Tests**: `asdu::tests::type_outside_the_profile_is_kept_with_its_octets_and_written_back_as_received`,
+  `apci::tests::an_unsupported_asdu_is_kept_and_the_stream_goes_on`, `server::respond::tests::a_test_command_outside_the_profile_is_mirrored_with_cause_44_and_nothing_else`,
+  `server::respond::tests::a_reset_process_command_is_confirmed_once_and_refused_when_the_handler_refuses_it`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

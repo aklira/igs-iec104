@@ -6,9 +6,9 @@
 //! of a whole ASDU (data unit identifier and information objects), and the
 //! profile rules that a decoded ASDU must satisfy.
 //!
-//! [`Asdu::decode`](crate::asdu::Asdu::decode) accepts every in-profile type ID and rejects the
-//! others with [`DecodeError::UnsupportedTypeId`](crate::error::DecodeError::UnsupportedTypeId),
-//! which carries the raw octets. [`validate_profile`](crate::asdu::validate_profile) checks the
+//! [`Asdu::decode`](crate::asdu::Asdu::decode) decodes every in-profile type ID. A type ID outside the
+//! profile is kept as received, with its octets ([`Body::Unsupported`]): its layout is unknown, and the
+//! station answers it with cause 44. [`validate_profile`](crate::asdu::validate_profile) checks the
 //! rules of the profile (type, sequence form, cause of transmission, direction) and says which one
 //! failed.
 
@@ -93,16 +93,24 @@ impl Asdu {
             });
         }
         let header = AsduHeader::decode(src)?;
-        if !header.type_id.in_profile() {
-            return Err(DecodeError::UnsupportedTypeId {
-                type_code: header.type_id.as_u8(),
-                raw: src.to_vec(),
-            });
-        }
         let body_octets = src.get(AsduHeader::SIZE..).ok_or(DecodeError::Truncated {
             needed: AsduHeader::SIZE,
             available: src.len(),
         })?;
+        if !header.type_id.in_profile() {
+            // Outside the profile the layout is unknown: the octets are kept, and the station answers
+            // with cause 44 (Body::Unsupported).
+            return Ok(Self {
+                cot: header.cot,
+                common_address: header.common_address,
+                body: Body::Unsupported {
+                    type_id: header.type_id,
+                    number: header.vsq.number(),
+                    sequence: header.vsq.sequence,
+                    octets: body_octets.to_vec(),
+                },
+            });
+        }
         let body = Body::decode(
             header.type_id,
             body_octets,
