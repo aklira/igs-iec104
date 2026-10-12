@@ -359,6 +359,20 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
   (client, server, redundancy, TLS), README quick start, `CHANGELOG.md`, MSRV policy.
 - Done when: `cargo doc --no-deps` has no warnings; examples compile in CI.
 
+**X4 — Usage examples**
+- Depends: X2, T2, S1, S2.
+- Produce: six more programs in `crates/igs-iec104/examples/`, for the uses that the examples of X2
+  do not show: `client_commands` (select-before-operate and set points), `client_interrogation` (each
+  request kind of the client), `client_events` (every event the client reports), `client_recovery`
+  (reconnection and requests made while offline), `server_handler` (an application that judges
+  commands and clock synchronizations) and `server_process_image` (points that change while the
+  station runs, with interrogation groups). Each program states in its module comment how to run it
+  and what to expect.
+- Done when: the examples pass the gate (`clippy --all-targets`); each one ran once against the
+  `server` and `client` examples, and the runs are recorded in `docs/ai-log/X4.md`. Further examples
+  (redundancy switch, low-level transport, TLS security events, rustls, offline codec) are not part of
+  this task.
+
 **X3 — Release readiness** ⛔
 - Depends: all previous tasks.
 - Produce: release checklist in `docs/RELEASE.md`; coverage ≥ 85 % codec and ≥ 75 % link/server
@@ -457,10 +471,11 @@ API: a maintainer reviews the API of U1 to U3 before it is implemented.
 | S5 Server interop, load and switchover ⛔ | [ ] |
 | X1 TLS | [x] |
 | X2 Documentation and examples | [x] |
+| X4 Usage examples | [x] |
 | X3 Release readiness ⛔ | [ ] |
 | U1 Graceful server shutdown ⛔ | [x] |
 | U2 Server connection and transfer events ⛔ | [x] |
 | U3 Client command policy on disconnect ⛔ | [x] |
 | U4 Supported action matrix | [x] |
 
-Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, L5, T2, T3, T4, S1–S4, S5, X1, X2, C7, X3. The tasks U1 to U4 can run before X3; U4 first, as it needs no API review.
+Suggested order: F1, F5, F2, F3, C1–C6, L1–L3, T1, F4, L4, L5, T2, T3, T4, S1–S4, S5, X1, X2, X4, C7, X3. The tasks U1 to U4 can run before X3; U4 first, as it needs no API review.
