@@ -8,7 +8,7 @@
 //! fields, and no event: the handshake then decides.
 
 use super::events::SecurityEvent;
-use super::profile::TLS12_SUITES;
+use super::profile::{is_disallowed_value, TLS12_SUITES};
 
 /// The handshake type of a ClientHello (RFC 5246, section 7.4).
 pub const CLIENT_HELLO: u8 = 1;
@@ -51,6 +51,8 @@ pub struct ClientHello {
     pub psk_ke_only: bool,
     /// The client sends early data (clause 8.8.11).
     pub early_data: bool,
+    /// Every cipher suite the client offers is disallowed (clause 7.3).
+    pub only_disallowed: bool,
 }
 
 impl ClientHello {
@@ -78,6 +80,7 @@ impl ClientHello {
             cbc: offers_cbc(suites),
             psk_ke_only: false,
             early_data: false,
+            only_disallowed: only_disallowed(suites),
         };
         // The extensions are optional: a body that ends here has none (RFC 5246, section 7.4.1.2).
         if body.is_empty() {
@@ -123,6 +126,9 @@ impl ClientHello {
         if self.early_data {
             events.push(SecurityEvent::EarlyDataIgnored);
         }
+        if self.only_disallowed {
+            events.push(SecurityEvent::DisallowedCipherSuite);
+        }
         events
     }
 
@@ -131,6 +137,16 @@ impl ClientHello {
     pub fn mac_then_encrypt(&self) -> bool {
         self.cbc && !self.encrypt_then_mac
     }
+}
+
+/// True when the client offers suites and every one of them is disallowed (clause 7.3).
+fn only_disallowed(suites: &[u8]) -> bool {
+    let mut codes = suites
+        .chunks_exact(2)
+        .filter_map(|pair| <[u8; 2]>::try_from(pair).ok())
+        .map(u16::from_be_bytes)
+        .peekable();
+    codes.peek().is_some() && codes.all(is_disallowed_value)
 }
 
 /// True when one of the suites is a CBC suite of the profile.
@@ -331,6 +347,28 @@ mod tests {
         assert_eq!(
             parsed.events(),
             vec![SecurityEvent::DeprecatedSignatureAlgorithm]
+        );
+    }
+
+    #[test]
+    fn a_hello_offering_only_disallowed_suites_raises_the_event() {
+        const DES: u16 = 0x0009;
+        const NULL_SHA: u16 = 0x0002;
+        let raises = |suites: &[u16]| {
+            ClientHello::parse(&hello(0x0303, suites, &[]))
+                .expect("parses")
+                .events()
+                .contains(&SecurityEvent::DisallowedCipherSuite)
+        };
+        assert!(raises(&[DES]), "only DES is offered");
+        assert!(
+            !raises(&[DES, GCM]),
+            "a suite of the profile is offered too"
+        );
+        assert!(!raises(&[GCM]));
+        assert!(
+            !raises(&[NULL_SHA]),
+            "NULL encryption alone is conditional, not disallowed"
         );
     }
 

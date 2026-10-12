@@ -373,6 +373,24 @@ substituted time. The API names it `substituted`.
 - **Confidence**: medium. The test checks the negotiation; it does not inspect the parameters.
 - **Test**: `tests/tls_openssl.rs::a_dhe_suite_offered_without_a_finite_field_group_is_negotiated`.
 
+### D-030 — The suites disallowed by clause 7.3 are read from the IANA registry
+
+- **Decision**: the suites disallowed by clause 7.3 are the NULL suite, the suites with MD5 as a component, and
+  the suites with DES (DES40 and 3DES included) for encryption. Their IANA values come from the TLS cipher suite
+  registry (47 suites, `DISALLOWED_SUITES` in `tls/profile.rs`). A ClientHello that offers only disallowed suites
+  raises TLS_DISALLOWED_CIPHER; a ClientHello that also offers an allowed suite does not. The station's own
+  cipher list does not contain any of them, so the handshake fails when no allowed suite is offered, and the
+  station ignores the disallowed proposals.
+- **Sources**: 62351-3 clause 7.3 (the list of disallowed suites, "not limited to" its names; the alarm for a
+  ClientHello that proposes only disallowed suites; the server ignores a disallowed proposal); the IANA TLS cipher
+  suite registry (values of the names).
+- **Confidence**: high for the names and the values; medium for the scope of "not limited to". NULL encryption
+  without MD5 or DES is conditional (table 1), so it is not disallowed here.
+- **Test**: `tls::client_hello::tests::a_hello_offering_only_disallowed_suites_raises_the_event`,
+  `tls::profile::tests::the_disallowed_table_follows_the_names`.
+- **Open**: the severity of TLS_DISALLOWED_CIPHER. Annex A prints it as a warning; clause 7.3 calls the event an
+  alarm. The code keeps the warning as printed (QUESTIONS.md, Q-030).
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

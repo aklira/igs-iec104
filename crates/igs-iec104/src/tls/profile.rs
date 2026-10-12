@@ -264,14 +264,72 @@ pub fn allows_group(iana: u16) -> bool {
         .any(|group| group.iana == iana && group.support != Support::Conditional)
 }
 
+/// The cipher suites disallowed by clause 7.3, with their IANA values: the suites named by
+/// [`is_disallowed`], read from the IANA TLS cipher suite registry (tls-parameters-4.csv, retrieved
+/// 2026-10-12). Suites with NULL encryption and no MD5 or DES component are conditional (table 1), not here.
+pub const DISALLOWED_SUITES: &[(u16, &str)] = &[
+    (0x0000, "TLS_NULL_WITH_NULL_NULL"),
+    (0x0001, "TLS_RSA_WITH_NULL_MD5"),
+    (0x0003, "TLS_RSA_EXPORT_WITH_RC4_40_MD5"),
+    (0x0004, "TLS_RSA_WITH_RC4_128_MD5"),
+    (0x0006, "TLS_RSA_EXPORT_WITH_RC2_CBC_40_MD5"),
+    (0x0008, "TLS_RSA_EXPORT_WITH_DES40_CBC_SHA"),
+    (0x0009, "TLS_RSA_WITH_DES_CBC_SHA"),
+    (0x000a, "TLS_RSA_WITH_3DES_EDE_CBC_SHA"),
+    (0x000b, "TLS_DH_DSS_EXPORT_WITH_DES40_CBC_SHA"),
+    (0x000c, "TLS_DH_DSS_WITH_DES_CBC_SHA"),
+    (0x000d, "TLS_DH_DSS_WITH_3DES_EDE_CBC_SHA"),
+    (0x000e, "TLS_DH_RSA_EXPORT_WITH_DES40_CBC_SHA"),
+    (0x000f, "TLS_DH_RSA_WITH_DES_CBC_SHA"),
+    (0x0010, "TLS_DH_RSA_WITH_3DES_EDE_CBC_SHA"),
+    (0x0011, "TLS_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA"),
+    (0x0012, "TLS_DHE_DSS_WITH_DES_CBC_SHA"),
+    (0x0013, "TLS_DHE_DSS_WITH_3DES_EDE_CBC_SHA"),
+    (0x0014, "TLS_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA"),
+    (0x0015, "TLS_DHE_RSA_WITH_DES_CBC_SHA"),
+    (0x0016, "TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA"),
+    (0x0017, "TLS_DH_anon_EXPORT_WITH_RC4_40_MD5"),
+    (0x0018, "TLS_DH_anon_WITH_RC4_128_MD5"),
+    (0x0019, "TLS_DH_anon_EXPORT_WITH_DES40_CBC_SHA"),
+    (0x001a, "TLS_DH_anon_WITH_DES_CBC_SHA"),
+    (0x001b, "TLS_DH_anon_WITH_3DES_EDE_CBC_SHA"),
+    (0x001e, "TLS_KRB5_WITH_DES_CBC_SHA"),
+    (0x001f, "TLS_KRB5_WITH_3DES_EDE_CBC_SHA"),
+    (0x0022, "TLS_KRB5_WITH_DES_CBC_MD5"),
+    (0x0023, "TLS_KRB5_WITH_3DES_EDE_CBC_MD5"),
+    (0x0024, "TLS_KRB5_WITH_RC4_128_MD5"),
+    (0x0025, "TLS_KRB5_WITH_IDEA_CBC_MD5"),
+    (0x0026, "TLS_KRB5_EXPORT_WITH_DES_CBC_40_SHA"),
+    (0x0029, "TLS_KRB5_EXPORT_WITH_DES_CBC_40_MD5"),
+    (0x002a, "TLS_KRB5_EXPORT_WITH_RC2_CBC_40_MD5"),
+    (0x002b, "TLS_KRB5_EXPORT_WITH_RC4_40_MD5"),
+    (0x008b, "TLS_PSK_WITH_3DES_EDE_CBC_SHA"),
+    (0x008f, "TLS_DHE_PSK_WITH_3DES_EDE_CBC_SHA"),
+    (0x0093, "TLS_RSA_PSK_WITH_3DES_EDE_CBC_SHA"),
+    (0xc003, "TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA"),
+    (0xc008, "TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA"),
+    (0xc00d, "TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA"),
+    (0xc012, "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA"),
+    (0xc017, "TLS_ECDH_anon_WITH_3DES_EDE_CBC_SHA"),
+    (0xc01a, "TLS_SRP_SHA_WITH_3DES_EDE_CBC_SHA"),
+    (0xc01b, "TLS_SRP_SHA_RSA_WITH_3DES_EDE_CBC_SHA"),
+    (0xc01c, "TLS_SRP_SHA_DSS_WITH_3DES_EDE_CBC_SHA"),
+    (0xc034, "TLS_ECDHE_PSK_WITH_3DES_EDE_CBC_SHA"),
+];
+
 /// True when the cipher suite with this name is disallowed outright (clause 7.3): the NULL suite, any
-/// suite with MD5 as a component, and any suite with DES or 3DES for encryption. The clause says "not
-/// limited to" its list, so 3DES is refused too (PROVENANCE.md, D-026).
+/// suite with MD5 as a component, and any suite with DES (DES40 and 3DES included) for encryption. The
+/// clause says "not limited to" its list, so 3DES and the export DES suites are refused too (D-026, D-030).
 pub fn is_disallowed(name: &str) -> bool {
     name == "TLS_NULL_WITH_NULL_NULL"
         || name
             .split('_')
-            .any(|part| part == "MD5" || part == "DES" || part == "3DES")
+            .any(|part| part == "MD5" || part == "3DES" || part.starts_with("DES"))
+}
+
+/// True when the cipher suite with this IANA value is disallowed (clause 7.3), see [`DISALLOWED_SUITES`].
+pub fn is_disallowed_value(iana: u16) -> bool {
+    DISALLOWED_SUITES.iter().any(|(value, _)| *value == iana)
 }
 
 #[cfg(test)]
@@ -307,6 +365,31 @@ mod tests {
             !allows(0x00A1),
             "0x00A1 is TLS_DH_RSA_WITH_AES_256_GCM_SHA384, not in the profile"
         );
+    }
+
+    #[test]
+    fn the_disallowed_table_follows_the_names() {
+        for (value, name) in DISALLOWED_SUITES {
+            assert!(
+                is_disallowed(name),
+                "{name} ({value:#06x}) must be disallowed"
+            );
+        }
+        assert!(is_disallowed_value(0x0000), "TLS_NULL_WITH_NULL_NULL");
+        assert!(is_disallowed_value(0x000A), "TLS_RSA_WITH_3DES_EDE_CBC_SHA");
+        assert!(
+            !is_disallowed_value(0x0002),
+            "NULL encryption without MD5 or DES is conditional"
+        );
+        assert!(
+            !is_disallowed_value(0xC02F),
+            "the GCM suite of the profile is allowed"
+        );
+        assert!(
+            is_disallowed("TLS_RSA_EXPORT_WITH_DES40_CBC_SHA"),
+            "DES40 encrypts with DES"
+        );
+        assert!(!is_disallowed("TLS_RSA_WITH_NULL_SHA"));
     }
 
     #[test]
