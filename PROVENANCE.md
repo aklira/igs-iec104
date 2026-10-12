@@ -294,6 +294,18 @@ substituted time. The API names it `substituted`.
 - **Confidence**: medium. This is the maintainer's choice for the answers; the clauses leave the answers to
   the application for commands (§10.5, as S3 notes).
 
+### D-022 — The values of the DHE GCM suites are the registry values of their names
+
+- **Decision**: TLS_DHE_RSA_WITH_AES_128_GCM_SHA256 is 0x009E, and TLS_DHE_RSA_WITH_AES_256_GCM_SHA384 is
+  0x009F. The profile uses these values. The values printed in table 1 of clause 7.2 (0xC0,0x9E and 0x00,0xA1)
+  are not used.
+- **Sources**: 62351-3 clause 7.2, table 1 (the names and the printed values, as printed); the IANA TLS
+  cipher suite registry (the values of the names: 0x009E and 0x009F for the GCM suites; 0xC09E names
+  TLS_DHE_RSA_WITH_AES_128_CCM and 0x00A1 names TLS_DH_RSA_WITH_AES_256_GCM_SHA384).
+- **Confidence**: high for the values of the names, which the registry gives. The standard's printed values
+  conflict with the names: the decision follows the names. The maintainer approved this correction (2026-10-12).
+- **Test**: `tls::profile::tests::the_dhe_gcm_suites_have_the_values_of_their_names`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

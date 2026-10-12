@@ -58,17 +58,17 @@ pub const TLS12_SUITES: &[CipherSuite] = &[
         support: Support::Mandatory,
         null_encryption: false,
     },
-    // The values of the two DHE suites are as printed in table 1. They do not seem to match the
-    // names; see QUESTIONS.md, Q-019.
+    // The values of the two DHE suites are the registry values of their names, not the values printed
+    // in table 1 (0xC09E and 0x00A1 name other suites); see QUESTIONS.md, Q-019 and PROVENANCE.md, D-022.
     CipherSuite {
-        iana: 0xC09E,
+        iana: 0x009E,
         name: "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
         version: Version::Tls12,
         support: Support::Mandatory,
         null_encryption: false,
     },
     CipherSuite {
-        iana: 0x00A1,
+        iana: 0x009F,
         name: "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
         version: Version::Tls12,
         support: Support::Optional,
@@ -283,6 +283,28 @@ mod tests {
                 assert!(allows(suite.iana), "{} must be allowed", suite.name);
             }
         }
+    }
+
+    #[test]
+    fn the_dhe_gcm_suites_have_the_values_of_their_names() {
+        // RFC 5288 values, from the IANA registry (PROVENANCE.md, D-022). The printed values 0xC09E and
+        // 0x00A1 name the CCM and DH_RSA suites.
+        let value = |name: &str| {
+            TLS12_SUITES
+                .iter()
+                .find(|suite| suite.name == name)
+                .map(|suite| suite.iana)
+        };
+        assert_eq!(value("TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"), Some(0x009E));
+        assert_eq!(value("TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"), Some(0x009F));
+        assert!(
+            !allows(0xC09E),
+            "0xC09E is TLS_DHE_RSA_WITH_AES_128_CCM, not in the profile"
+        );
+        assert!(
+            !allows(0x00A1),
+            "0x00A1 is TLS_DH_RSA_WITH_AES_256_GCM_SHA384, not in the profile"
+        );
     }
 
     #[test]
