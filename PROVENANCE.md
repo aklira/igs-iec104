@@ -306,6 +306,73 @@ substituted time. The API names it `substituted`.
   conflict with the names: the decision follows the names. The maintainer approved this correction (2026-10-12).
 - **Test**: `tls::profile::tests::the_dhe_gcm_suites_have_the_values_of_their_names`.
 
+### D-023 — The mnemonics of clauses 7.5.7 and 8.3.2 are kept as printed
+
+- **Decision**: the events TLS_NO_EPSK_MODE (clause 7.5.7, the encrypt-then-MAC event) and TLS_NO_ENCRYPT-THEN-MAC
+  (clause 8.3.2, the PSK event) keep the mnemonics printed in Annex A, table A.1, although the table pairs each
+  with the other clause. The meaning of each event is the description of its clause.
+- **Sources**: 62351-3 Annex A table A.1; clauses 7.5.7 and 8.3.2.
+- **Confidence**: high for the reading of the clauses; the choice of the printed mnemonic is a presentation choice.
+- **Test**: `tls::events::tests::the_mnemonics_are_as_printed` (the mnemonics), with the mnemonic of each event
+  in its source.
+
+### D-024 — The duplicate identifier 2.8 of Annex A is kept as printed
+
+- **Decision**: the events OCSP responder unavailable (clause 6.4.4.4.3) and certificate expired (clause 6.4.4.5)
+  both carry the identifier IEC 62351-3:2.8, as printed. The identifiers 2.9 to 2.14 follow in order.
+- **Sources**: 62351-3 Annex A table A.2.
+- **Confidence**: medium: the standard prints the duplicate and gives no other number.
+- **Test**: `tls::events::tests::identifiers_are_unique_except_the_printed_duplicate_of_2_8`.
+
+### D-025 — The group 62391 of the short-key event is a typo for 62351
+
+- **Decision**: the identifier of the short-key event (clause 7.4.3) is IEC 62351-3:2.13. The printed group
+  62391 is read as a typo, as the other rows of the table give 62351-3.
+- **Sources**: 62351-3 Annex A table A.2 (the other rows of the table).
+- **Confidence**: high.
+- **Test**: `tls::events::tests::the_mnemonics_are_as_printed` (the identifier 62351-3:2.13).
+
+### D-026 — 3DES is disallowed, as DES for encryption
+
+- **Decision**: clause 7.3 disallows the suites with DES for encryption. "TLS_*_DES_*" is not limited to the
+  names it lists, and 3DES encrypts with DES. The predicate refuses 3DES suites (TLS_RSA_WITH_3DES_EDE_CBC_SHA
+  and the like). The station's ciphers do not offer 3DES, so no session negotiates it.
+- **Sources**: 62351-3 clause 7.3 (its list is "not limited to" the names given).
+- **Confidence**: medium: the literal pattern does not match 3DES; the clause's purpose does. Maintainer decision.
+- **Test**: `tls::profile::tests::the_disallowed_names_of_clause_7_3_are_recognised`.
+- **Gap, not yet implemented**: clause 7.3 also asks for an alarm when only disallowed suites are proposed in a
+  ClientHello, and for the server to ignore a disallowed proposal. The predicate is not applied at the handshake.
+
+### D-027 — A refused handshake on a revoked certificate raises both events
+
+- **Decision**: a revoked certificate that refuses a session establishment raises "certificate validation: revoked
+  certificate" on detection, and "session terminated due to revoked certificate" when the refusal ends the
+  connection attempt.
+- **Sources**: 62351-3 clause 6.4.4.4.1 (an entity receiving a revoked certificate during establishment refuses
+  the connection; the detection raises one event, the termination raises the other).
+- **Confidence**: medium to high.
+- **Test**: `tests/tls_openssl.rs::a_revoked_client_certificate_is_refused_with_the_crl_and_both_events_are_raised`.
+
+### D-028 — The handshake notice is raised on each side
+
+- **Decision**: "handshake successfully performed" is raised by each side when its own handshake completes. In TLS
+  1.3 the client may complete its side before the station checks the client certificate, so the client raises the
+  notice and the station then refuses the certificate.
+- **Sources**: 62351-3 clause 6.1 (the notice on a successful handshake, with no statement per side); clauses
+  6.4.3 (certificate checks).
+- **Confidence**: medium: the clause does not say whether the notice means both sides.
+- **Test**: `tests/tls_openssl.rs` (the TLS 1.2 and TLS 1.3 client certificate tests).
+
+### D-029 — A client without a finite-field group gets the station's Diffie-Hellman parameters
+
+- **Decision**: a TLS 1.2 client that offers the DHE suite and no finite-field group is negotiated the DHE suite.
+  The station supplies its own parameters (the RFC 5114 groups offered by the OpenSSL backend). A client that
+  offers ffdhe2048 gets the RFC 7919 group, as tested by the mandatory group of TLS 1.3.
+- **Sources**: 62351-3 clauses 7.2 (table 1), 7.4.2, 8.3.3 (table 4). The standard does not say which parameters
+  the TLS 1.2 DHE suite uses.
+- **Confidence**: medium. The test checks the negotiation; it does not inspect the parameters.
+- **Test**: `tests/tls_openssl.rs::a_dhe_suite_offered_without_a_finite_field_group_is_negotiated`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

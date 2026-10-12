@@ -536,6 +536,27 @@ async fn the_suites_that_rustls_cannot_offer_are_negotiated() {
 }
 
 #[tokio::test]
+async fn a_dhe_suite_offered_without_a_finite_field_group_is_negotiated() {
+    // A TLS 1.2 client that offers no finite-field group: the station supplies its own Diffie-Hellman
+    // parameters (D-029). The test checks that the suite is negotiated; the parameters are not inspected.
+    let events = Arc::new(Recorder::default());
+    let station = start_station_with(&events, RSA_SERVER_CERTIFICATE, RSA_SERVER_KEY).await;
+    let (name, _) = raw_client(station, |builder| {
+        with_client_identity(builder);
+        builder
+            .set_max_proto_version(Some(SslVersion::TLS1_2))
+            .expect("TLS 1.2");
+        builder.set_groups_list("P-256").expect("the group");
+        builder
+            .set_cipher_list("DHE-RSA-AES128-GCM-SHA256")
+            .expect("the suite");
+    })
+    .await
+    .expect("the DHE suite is negotiated without a finite-field group");
+    assert_eq!(name, "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256");
+}
+
+#[tokio::test]
 async fn the_mandatory_ffdhe_group_of_tls_13_is_negotiated() {
     // The mandatory group ffdhe2048 of TLS 1.3 (table 16), offered alone (clause 8.3.3).
     let server_events = Arc::new(Recorder::default());
@@ -794,7 +815,7 @@ fn present<'a>(
     security_level: u32,
 ) -> impl FnOnce(&mut openssl::ssl::SslConnectorBuilder) + 'a {
     move |builder| {
-        // TLS 1.2: a TLS 1.3 client finishes before the server checks its certificate (Q-027), so a
+        // TLS 1.2: a TLS 1.3 client finishes before the server checks its certificate (D-028), so a
         // refusal would not reach the client.
         builder
             .set_max_proto_version(Some(SslVersion::TLS1_2))

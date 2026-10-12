@@ -217,7 +217,7 @@ impl SecurityEvent {
                 ("TLS_DEP_SIG_ALGO", Severity::Warning, 1, 16, "7.5.4")
             }
             // The mnemonic of this row is printed as the standard has it; the table pairs it
-            // with the PSK clause, so Q-020 asks the maintainers to confirm the pairing.
+            // with the PSK clause; the mnemonics are kept as printed (PROVENANCE.md, D-023).
             Self::NoEncryptThenMac => ("TLS_NO_EPSK_MODE", Severity::Alarm, 1, 17, "7.5.7"),
             Self::NoEphemeralPskMode => {
                 ("TLS_NO_ENCRYPT-THEN-MAC", Severity::Warning, 1, 18, "8.3.2")
@@ -243,7 +243,7 @@ impl SecurityEvent {
             Self::CrlExpired => ("TLS_CRL_EXP", Severity::Warning, 2, 6, "6.4.4.4.2"),
             Self::OcspResponseExpired => ("TLS_OCSP_RES_EXP", Severity::Warning, 2, 7, "6.4.4.4.3"),
             // The identifiers 2.8 of this row and of CertificateExpired are both printed in the
-            // standard; Q-021 asks which one is right.
+            // standard; both are kept as printed (PROVENANCE.md, D-024).
             Self::OcspResponderUnavailable => (
                 "TLS_OCSP_RESP_UNAVAIL",
                 Severity::Warning,
@@ -258,7 +258,7 @@ impl SecurityEvent {
             Self::SignatureNotVerified => ("TLS_SIG_V_FAILED", Severity::Alarm, 2, 10, "6.4.4.6"),
             Self::ShortRsaKey => ("TLS_SHORT_RSA_KEY", Severity::Alarm, 2, 11, "7.4.3"),
             Self::MinimumKeyLength => ("TLS_MIN_KEY", Severity::Warning, 2, 12, "7.4.3"),
-            // The standard prints this identifier with the group 62391; Q-022 records the
+            // The standard prints this identifier with the group 62391, a typo for 62351 (D-025); the
             // reading as a typo for 62351.
             Self::ShortKey => ("TLS_SHORT_KEY", Severity::Alarm, 2, 13, "7.4.3"),
             Self::DeprecatedHash => ("TLS_DEP_HASH", Severity::Warning, 2, 14, "7.4.3"),

@@ -264,12 +264,14 @@ pub fn allows_group(iana: u16) -> bool {
         .any(|group| group.iana == iana && group.support != Support::Conditional)
 }
 
-/// True when the cipher suite with this IANA name is disallowed outright (clause 7.3): the NULL
-/// suite, any suite with MD5 as a component, and any suite with DES for encryption.
-/// 3DES (for example TLS_RSA_WITH_3DES_EDE_CBC_SHA) is not matched: QUESTIONS.md, Q-023 asks
-/// whether clause 7.3 covers it.
+/// True when the cipher suite with this name is disallowed outright (clause 7.3): the NULL suite, any
+/// suite with MD5 as a component, and any suite with DES or 3DES for encryption. The clause says "not
+/// limited to" its list, so 3DES is refused too (PROVENANCE.md, D-026).
 pub fn is_disallowed(name: &str) -> bool {
-    name == "TLS_NULL_WITH_NULL_NULL" || name.split('_').any(|part| part == "MD5" || part == "DES")
+    name == "TLS_NULL_WITH_NULL_NULL"
+        || name
+            .split('_')
+            .any(|part| part == "MD5" || part == "DES" || part == "3DES")
 }
 
 #[cfg(test)]
@@ -322,6 +324,10 @@ mod tests {
         assert!(is_disallowed("TLS_NULL_WITH_NULL_NULL"));
         assert!(is_disallowed("TLS_RSA_WITH_NULL_MD5"));
         assert!(is_disallowed("TLS_RSA_WITH_DES_CBC_SHA"));
+        assert!(
+            is_disallowed("TLS_RSA_WITH_3DES_EDE_CBC_SHA"),
+            "3DES encrypts with DES (D-026)"
+        );
         assert!(!is_disallowed("TLS_RSA_WITH_AES_128_CBC_SHA256"));
         assert!(!is_disallowed("TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"));
     }

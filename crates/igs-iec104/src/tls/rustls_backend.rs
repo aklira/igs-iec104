@@ -222,7 +222,7 @@ pub fn raise_handshake_success(events: &dyn SecurityEvents) {
 }
 
 /// The events of a handshake error. A revoked certificate also terminates the session (clause
-/// 6.4.4.4.1), so both events are raised; Q-024 asks whether that holds for a refused handshake.
+/// 6.4.4.4.1), so both events are raised, also for a refused handshake (PROVENANCE.md, D-027).
 fn failure_events(error: &RustlsError) -> &'static [SecurityEvent] {
     match error {
         RustlsError::NoCertificatesPresented => &[SecurityEvent::NoPeerCertificate],
