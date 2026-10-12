@@ -22,8 +22,8 @@ ARG J60870_SHA256
 ADD https://repo1.maven.org/maven2/org/openmuc/j60870/${J60870_VERSION}/j60870-${J60870_VERSION}.jar /opt/peer/j60870.jar
 RUN echo "${J60870_SHA256}  /opt/peer/j60870.jar" | sha256sum -c - \
     && chmod 0644 /opt/peer/j60870.jar
-COPY Driver.java Load.java /src/
-RUN javac -cp /opt/peer/j60870.jar -d /opt/peer/classes /src/Driver.java /src/Load.java
+COPY Driver.java Load.java TlsStation.java /src/
+RUN javac -cp /opt/peer/j60870.jar -d /opt/peer/classes /src/Driver.java /src/Load.java /src/TlsStation.java
 
 FROM docker.io/library/eclipse-temurin@sha256:80b6aebe2f990697ada73fdbe451c7e9ec5e4adbde7a1e3625bc665e3b2fc06e
 RUN groupadd --system --gid 10003 peer \

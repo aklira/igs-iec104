@@ -93,7 +93,10 @@ def wait_listening(bench: Bench, service: str, timeout: float = 60) -> None:
     """Waits until the station in `service` listens on port 2404 (hexadecimal 0964 in /proc/net/tcp)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        probe = bench.exec(service, "grep", "-q", ":0964 .* 0A ", "/proc/net/tcp", check=False)
+        # IPv4 and IPv6 sockets: a station that listens on all addresses may use the IPv6 table.
+        probe = bench.exec(
+            service, "grep", "-q", ":0964 .* 0A ", "/proc/net/tcp", "/proc/net/tcp6", check=False
+        )
         if probe.returncode == 0:
             return
         time.sleep(1)

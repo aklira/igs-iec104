@@ -49,6 +49,10 @@ def prepare() -> Path:
         ["-export", "-in", "rogue_client.pem", "-inkey", "rogue_client.key", "-out", "rogue.p12"],
         cwd=MATERIAL,
     )
+    _pkcs12(
+        ["-export", "-in", "server.pem", "-inkey", "server.key", "-out", "server.p12"],
+        cwd=MATERIAL,
+    )
     return MATERIAL
 
 

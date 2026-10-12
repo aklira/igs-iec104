@@ -14,6 +14,7 @@
 //! Times are read from this machine's clock in UTC.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -33,6 +34,11 @@ use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
 use igs_iec104_link::TransferState;
 use tokio::time::timeout;
 
+// The TLS options are the server's (task X1): the same trust anchors, identity and printed events.
+#[cfg(feature = "openssl")]
+#[path = "igs104_server/tls.rs"]
+mod tls;
+
 /// Connects to a controlled station and runs one procedure.
 #[derive(Parser, Debug)]
 #[command(
@@ -50,8 +56,40 @@ struct Cli {
     /// Seconds to wait for the connection, and for each confirmation.
     #[arg(short, long, default_value_t = 10)]
     timeout: u64,
+    /// The trust anchors (PEM) of the station's certificate. With the other two TLS options, the client
+    /// secures the connection with TLS, and presents its certificate (IEC 62351-3).
+    #[arg(long, value_name = "FILE")]
+    tls_roots: Option<PathBuf>,
+    /// The certificate chain (PEM) of this client, for TLS. Needs --tls-roots and --tls-key.
+    #[arg(long, value_name = "FILE")]
+    tls_certificate: Option<PathBuf>,
+    /// The private key (PEM) of this client, for TLS. Needs --tls-roots and --tls-certificate.
+    #[arg(long, value_name = "FILE")]
+    tls_key: Option<PathBuf>,
+    /// The name the station's certificate must carry, for TLS.
+    #[arg(long, default_value = "localhost")]
+    tls_host: String,
     #[command(subcommand)]
     action: Action,
+}
+
+/// The TLS backend of the client, when the three TLS options are given; none of them means no TLS.
+fn secure(cli: &Cli) -> Outcome<Option<igs_iec104::tls::Secure>> {
+    match (&cli.tls_roots, &cli.tls_certificate, &cli.tls_key) {
+        (None, None, None) => Ok(None),
+        #[cfg(feature = "openssl")]
+        (Some(roots), Some(certificate), Some(key)) => {
+            tls::backend(roots, certificate, key).map(Some)
+        }
+        #[cfg(not(feature = "openssl"))]
+        (Some(_), Some(_), Some(_)) => {
+            Err("this build has no TLS: build with the openssl feature".to_string())
+        }
+        _ => Err(
+            "the TLS options need --tls-roots, --tls-certificate and --tls-key together"
+                .to_string(),
+        ),
+    }
 }
 
 /// The procedure to run.
@@ -204,7 +242,10 @@ fn main() -> ExitCode {
 async fn run(cli: Cli) -> Outcome {
     let confirm = Duration::from_secs(cli.timeout);
     let common_address = CommonAddress::new(cli.common_address);
-    let config = ClientConfig::new(cli.address, common_address);
+    let mut config = ClientConfig::new(cli.address, common_address);
+    if let Some(tls) = secure(&cli)? {
+        config = config.with_tls(tls, cli.tls_host.clone());
+    }
     let mut client = Client::connect(config);
     match cli.action {
         Action::Monitor { duration } => {

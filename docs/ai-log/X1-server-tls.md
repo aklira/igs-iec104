@@ -61,3 +61,21 @@ Decisions taken while running it:
 
 Not covered yet: the other direction, where igs-iec104 is the TLS client of a j60870 station with TLS; this needs
 the j60870 station with an SSL socket factory, and it is the remaining TLS interop of X1.
+
+## The other direction: igs104-client as the TLS client of a j60870 station
+
+- `igs104-client` takes the three TLS options of the station (`--tls-roots`, `--tls-certificate`, `--tls-key`) and
+  `--tls-host` (the name the station's certificate must carry, `localhost` by default). It reuses the server's TLS
+  module (`bin/igs104_server/tls.rs`), so its events print the same way.
+- `crates/igs-iec104/tests/client_binary.rs`: the client interrogates a TLS station with its certificate; a client that
+  trusts only its own certificate is refused.
+- The j60870 station over TLS (`bench/peer/j60870/TlsStation.java`): the same answer as the MCP station (one point,
+  address 100, value 12.5), served with the station identity by a `ServerSocketFactory`. The client does not require
+  a client certificate in this direction.
+- `bench/tests/test_tls_interop_reverse.py`, two tests, passing: the client's interrogation prints the point, and a
+  client that trusts only its own certificate is refused, without the point. The station image holds both binaries
+  (`bench/tls/station.Dockerfile`).
+
+With this, the TLS interop of X1 covers both directions, with the j60870 peer as the other end. Two gaps remain in
+the matrix: the RSA-PSS and CCM suites and the TLS 1.3 variants are not run against the peer, and the j60870 station
+does not require client certificates, so the refusal of a client without one is covered only by the station side.

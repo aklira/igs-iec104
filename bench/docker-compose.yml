@@ -141,6 +141,30 @@ services:
     volumes:
       - ./tls-material:/bench/tls-material:ro
 
+  # The reverse TLS interop of X1 (tests/test_tls_interop_reverse.py): the j60870 station over TLS, and the
+  # command-line client of igs104-client, both in the profile tls. The client runs from the station image, which
+  # holds both binaries (bench/tls/station.Dockerfile).
+  tls-jstation:
+    build: ./peer/j60870
+    image: igs-iec104-j60870:bench
+    profiles: ["tls"]
+    entrypoint: ["java", "-cp", "/opt/peer/classes:/opt/peer/j60870.jar", "TlsStation", "--port", "2404", "--common-address", "1", "--keystore", "/bench/tls-material/server.p12", "--password", "bench"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.62
+    volumes:
+      - ./tls-material:/bench/tls-material:ro
+
+  tls-client:
+    image: localhost/igs-iec104-station:tls
+    profiles: ["tls"]
+    entrypoint: ["sleep", "infinity"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.63
+    volumes:
+      - ./tls-material:/bench/tls-material:ro
+
 networks:
   bench:
     ipam:
