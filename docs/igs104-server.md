@@ -36,8 +36,11 @@ cannot be read or checked stops the station at start, with the reason.
 
 ## What it does
 
-- **Connections.** All connections of the station form one redundancy group (§10.2): one of them is
-  started at a time, and a start on another connection closes the others that are not stopped (§10.7).
+- **Connections.** The connections from one controlling station address form one redundancy group (§10.2):
+  one of them is started at a time, and a start on another connection closes the others of that group that
+  are not stopped (§10.7). A controlling station at another address has its own group, with its own process
+  image, so several controlling stations can transfer data at once (§10.2, rule 7). A point published to the
+  station, and each simulated change, reach every group.
   Events raised while no connection is started wait for the next one.
 - **Interrogation and reads.** The station answers the general interrogation and the group interrogations
   with its points, a counter interrogation with its counters, and a read with the point at the address.

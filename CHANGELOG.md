@@ -7,6 +7,9 @@ All notable changes to this project are recorded in this file. The format follow
 
 ### Added
 
+- Each controlling station address has its own redundancy group (§10.2, rule 7): several controlling stations
+  transfer data at once, and each change of the station reaches every group (D-032).
+
 - `Handler::reset_process`: the application judges a reset process command (C_RP_NA_1). The default refuses it, as
   before (D-031).
 - `Body::Unsupported`: an ASDU of a type outside the 104 profile is kept as received, and the station mirrors it

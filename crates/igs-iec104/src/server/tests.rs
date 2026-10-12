@@ -6,9 +6,8 @@
 //! (duplex streams) with the server's own code, so the tests need no socket. Timers are set far
 //! beyond the test, so that the paused clock moves only for the short waits of `settle`.
 
-use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use igs_iec104_codec::apci::{Apdu, SequenceNumber, UnnumberedFunction};
@@ -18,12 +17,12 @@ use igs_iec104_codec::formats::Cp56Time2a;
 use igs_iec104_codec::header::{cause, CommonAddress, InformationObjectAddress};
 use igs_iec104_link::{LinkConfig, Parameters, Role, TransferState};
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
 use super::respond::{Handler, Operation, Refusal};
 use super::{
-    close_connections, serve, AbortOnDrop, ClosedReport, ConnectionEnd, EventSink, Group, Process,
+    close_connections, serve, AbortOnDrop, ClosedReport, ConnectionEnd, EventSink, Groups,
     ServerEvent, ServerHandle, Station,
 };
 use crate::procedures;
@@ -57,19 +56,11 @@ fn parameters() -> Parameters {
 
 /// A station with one float point, and its handle to publish the changes of the point.
 fn station() -> (Arc<Station<Accept>>, ServerHandle) {
-    let process = Arc::new(Process {
-        group: Mutex::new(Group {
-            image: ProcessImage::new(NonZeroUsize::new(64).expect("a capacity")).expect("an image"),
-            members: BTreeMap::new(),
-            started: None,
-            carry: VecDeque::new(),
-            next_id: 0,
-        }),
-        queued: Notify::new(),
-    });
+    let template = ProcessImage::new(NonZeroUsize::new(64).expect("a capacity")).expect("an image");
+    let groups = Arc::new(Groups::new(template));
     let common_address = CommonAddress::new(STATION);
     let station = Arc::new(Station {
-        process: Arc::clone(&process),
+        groups: Arc::clone(&groups),
         handler: Accept,
         link: LinkConfig::new(Role::Controlled, parameters()).expect("valid parameters"),
         common_address,
@@ -80,7 +71,7 @@ fn station() -> (Arc<Station<Accept>>, ServerHandle) {
     });
     let handle = ServerHandle {
         common_address,
-        process,
+        groups,
     };
     handle
         .add_point(
@@ -148,16 +139,17 @@ fn controlling_link() -> LinkConfig {
 }
 
 fn controller(station: &Arc<Station<Accept>>) -> Controller {
-    let (server_side, peer) = duplex(1 << 16);
-    tokio::spawn(serve(
-        server_side,
-        Arc::clone(station),
-        std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-    ));
+    controller_at(station, std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+}
+
+/// A controlling station at `peer`: connections from one address share a redundancy group.
+fn controller_at(station: &Arc<Station<Accept>>, peer: std::net::SocketAddr) -> Controller {
+    let (server_side, peer_side) = duplex(1 << 16);
+    tokio::spawn(serve(server_side, Arc::clone(station), peer));
     let (commands, commands_rx) = mpsc::channel(32);
     let (deliveries_tx, deliveries) = mpsc::channel(32);
     tokio::spawn(async move {
-        let _ = run(peer, controlling_link(), commands_rx, deliveries_tx).await;
+        let _ = run(peer_side, controlling_link(), commands_rx, deliveries_tx).await;
     });
     Controller {
         commands,
@@ -363,6 +355,32 @@ async fn an_acknowledgement_that_opens_the_window_sends_the_held_events_at_once(
     assert!(
         waited < super::RETRY,
         "the held events waited {waited:?} for the retry timer"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn controlling_stations_at_different_addresses_transfer_at_once_and_each_gets_the_changes() {
+    // Clause 10.2, rule 7: each controlling station has its own redundancy group. Both transfer data at
+    // once (the second start supersedes nobody of the other group), and a change of the station reaches both.
+    let (station, handle) = station();
+    let mut first = controller_at(&station, std::net::SocketAddr::from(([127, 0, 0, 1], 1)));
+    first.start().await;
+    first.wait_started().await;
+    let mut second = controller_at(&station, std::net::SocketAddr::from(([127, 0, 0, 2], 1)));
+    second.start().await;
+    second.wait_started().await;
+    settle().await;
+
+    publish(&handle, 7);
+    assert_eq!(
+        first.next_value().await,
+        7.0,
+        "the first controlling station"
+    );
+    assert_eq!(
+        second.next_value().await,
+        7.0,
+        "the second controlling station"
     );
 }
 

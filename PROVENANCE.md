@@ -410,6 +410,20 @@ substituted time. The API names it `substituted`.
   `apci::tests::an_unsupported_asdu_is_kept_and_the_stream_goes_on`, `server::respond::tests::a_test_command_outside_the_profile_is_mirrored_with_cause_44_and_nothing_else`,
   `server::respond::tests::a_reset_process_command_is_confirmed_once_and_refused_when_the_handler_refuses_it`.
 
+### D-032 — One redundancy group per controlling station address
+
+- **Decision**: the connections from one controlling station address form one redundancy group, with its own
+  process image. A controlling station at another address has its own group. A point published to the station,
+  and each change of a point, reach every group. A group made later starts from the values of the station; the
+  events raised while no controlling station was connected wait for the first group, as before.
+- **Sources**: 62351-3 is not involved; 60870-5-104 clause 10.2: one started connection per redundancy group (rule 3),
+  and a controlling station that needs the same controlled station simultaneously gets a different redundancy
+  group (rule 7). The process image belongs to the group (rule 6).
+- **Confidence**: high for the rule; medium for the choice of the address as the key: the standard does not say how
+  the station tells its controlling stations apart. A station with several controlling stations behind one address
+  shares one group.
+- **Test**: `server::tests::controlling_stations_at_different_addresses_transfer_at_once_and_each_gets_the_changes`.
+
 ## Third-party code and sources
 
 | Source | Licence | Use | Provenance |

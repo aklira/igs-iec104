@@ -5,11 +5,13 @@
 //! The controlled station: a server that accepts connections from controlling stations and
 //! answers them (IEC 60870-5-104 §7.2 and §7.5 to §7.10, §10).
 //!
-//! [`Server::bind`] listens on the configured address. The connections of one server form
-//! a redundancy group (§10.2): they share one process image, and only one of them carries
-//! data at a time, the one that received the last STARTDT act. Each accepted connection runs
-//! one APCI session of the controlled role ([`crate::transport::run`]), and its ASDUs are
-//! answered by a [`Responder`].
+//! [`Server::bind`] listens on the configured address. The connections from one controlling
+//! station address form a redundancy group (§10.2): they share one process image, and only one
+//! of them carries data at a time, the one that received the last STARTDT act. A controlling
+//! station at another address has its own group, with its own image, so two controlling stations
+//! can transfer data at once (§10.2, rule 7). The points published to the station reach every
+//! group. Each accepted connection runs one APCI session of the controlled role
+//! ([`crate::transport::run`]), and its ASDUs are answered by a [`Responder`].
 //!
 //! The events of the image wait in its queue until the started connection takes them. When a
 //! connection is started, the others that are not stopped are closed (§10.7). The events of a
@@ -23,7 +25,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -294,11 +296,146 @@ impl Group {
     }
 }
 
-/// What the connections of the station share.
+/// What the connections of one redundancy group share.
 struct Process {
     group: Mutex<Group>,
     /// Signals the started connection that the image has new events.
     queued: Notify,
+}
+
+/// The redundancy groups of the station, one per controlling station address (§10.2, rule 7). The
+/// template holds the points and their values, and every group holds the same points: a publication
+/// reaches them all, and a group made later starts from the template's values.
+struct Groups {
+    inner: Mutex<GroupsInner>,
+}
+
+struct GroupsInner {
+    template: ProcessImage,
+    processes: BTreeMap<IpAddr, Arc<Process>>,
+}
+
+impl Groups {
+    fn new(template: ProcessImage) -> Self {
+        Self {
+            inner: Mutex::new(GroupsInner {
+                template,
+                processes: BTreeMap::new(),
+            }),
+        }
+    }
+
+    fn inner(&self) -> MutexGuard<'_, GroupsInner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The group of a controlling station at `address`, made when it is new. The first group takes the
+    /// events raised while no controlling station was connected (they wait for the first one, as before);
+    /// a later group starts from the values, and learns the rest by interrogation.
+    fn process_of(&self, address: IpAddr) -> Arc<Process> {
+        let mut inner = self.inner();
+        if let Some(process) = inner.processes.get(&address) {
+            return Arc::clone(process);
+        }
+        let mut image = inner.template.snapshot();
+        if inner.processes.is_empty() {
+            image.set_events(inner.template.take_events());
+        }
+        let process = Arc::new(Process {
+            group: Mutex::new(Group {
+                image,
+                members: BTreeMap::new(),
+                started: None,
+                carry: VecDeque::new(),
+                next_id: 0,
+            }),
+            queued: Notify::new(),
+        });
+        inner.processes.insert(address, Arc::clone(&process));
+        process
+    }
+
+    fn add_point(
+        &self,
+        common: CommonAddress,
+        address: InformationObjectAddress,
+        value: PointValue,
+        stamped: bool,
+    ) -> Result<(), ProcessError> {
+        let mut inner = self.inner();
+        inner.template.add_point(common, address, value, stamped)?;
+        for process in inner.processes.values() {
+            lock(&process.group)
+                .image
+                .add_point(common, address, value, stamped)?;
+        }
+        Ok(())
+    }
+
+    fn set_group(
+        &self,
+        common: CommonAddress,
+        address: InformationObjectAddress,
+        group: u8,
+    ) -> Result<(), ProcessError> {
+        let mut inner = self.inner();
+        inner.template.set_group(common, address, group)?;
+        for process in inner.processes.values() {
+            lock(&process.group)
+                .image
+                .set_group(common, address, group)?;
+        }
+        Ok(())
+    }
+
+    /// A change of a point reaches every group. The started connection of each group sends it.
+    fn update(
+        &self,
+        common: CommonAddress,
+        address: InformationObjectAddress,
+        value: PointValue,
+        time: Cp56Time2a,
+    ) -> Result<Update, ProcessError> {
+        let mut inner = self.inner();
+        let result = inner.template.update(common, address, value, time);
+        if !inner.processes.is_empty() {
+            // Each group queues its own copy of the change: the template keeps none.
+            inner.template.clear_events();
+        }
+        if let Ok(Update::Queued) = result {
+            for process in inner.processes.values() {
+                let queued = lock(&process.group)
+                    .image
+                    .update(common, address, value, time);
+                if let Ok(Update::Queued) = queued {
+                    process.queued.notify_one();
+                }
+            }
+        }
+        result
+    }
+
+    fn value(
+        &self,
+        common: CommonAddress,
+        address: InformationObjectAddress,
+    ) -> Option<PointValue> {
+        self.inner().template.value(common, address)
+    }
+
+    /// The events not yet sent: those of the template (raised while no group existed), and those of each group.
+    fn pending_events(&self) -> usize {
+        let inner = self.inner();
+        inner
+            .processes
+            .values()
+            .fold(inner.template.pending(), |total, process| {
+                let group = lock(&process.group);
+                total
+                    .saturating_add(group.carry.len())
+                    .saturating_add(group.image.pending())
+            })
+    }
 }
 
 fn lock(group: &Mutex<Group>) -> MutexGuard<'_, Group> {
@@ -308,7 +445,7 @@ fn lock(group: &Mutex<Group>) -> MutexGuard<'_, Group> {
 
 /// What every connection of the station needs.
 struct Station<H> {
-    process: Arc<Process>,
+    groups: Arc<Groups>,
     handler: H,
     link: LinkConfig,
     common_address: CommonAddress,
@@ -408,7 +545,7 @@ impl<H: Handler> Server<H> {
             LinkConfig::new(Role::Controlled, config.parameters).map_err(ServerError::Config)?;
         let initialization = Coi::new(config.initialization_cause, false)
             .ok_or(ServerError::Initialization(config.initialization_cause))?;
-        let image = ProcessImage::new(config.event_capacity).map_err(ServerError::Process)?;
+        let template = ProcessImage::new(config.event_capacity).map_err(ServerError::Process)?;
         let listener = TcpListener::bind(config.bind)
             .await
             .map_err(ServerError::Io)?;
@@ -429,22 +566,12 @@ impl<H: Handler> Server<H> {
             }
             None => (None, None),
         };
-        let process = Arc::new(Process {
-            group: Mutex::new(Group {
-                image,
-                members: BTreeMap::new(),
-                started: None,
-                carry: VecDeque::new(),
-                next_id: 0,
-            }),
-            queued: Notify::new(),
-        });
         Ok(Self {
             listener,
             tls: config.tls,
             events,
             station: Arc::new(Station {
-                process,
+                groups: Arc::new(Groups::new(template)),
                 handler,
                 link,
                 common_address: config.common_address,
@@ -471,7 +598,7 @@ impl<H: Handler> Server<H> {
     pub fn handle(&self) -> ServerHandle {
         ServerHandle {
             common_address: self.station.common_address,
-            process: Arc::clone(&self.station.process),
+            groups: Arc::clone(&self.station.groups),
         }
     }
 
@@ -527,11 +654,11 @@ impl<H: Handler> Server<H> {
         let open = connections.len();
         self.station.stop.send_replace(true);
         let forced = close_connections(&mut connections, grace).await;
-        let group = lock(&self.station.process.group);
+        let pending_events = self.station.groups.pending_events();
         ShutdownReport {
             connections: open,
             forced,
-            pending_events: group.carry.len().saturating_add(group.image.pending()),
+            pending_events,
         }
     }
 }
@@ -554,19 +681,19 @@ async fn close_connections(connections: &mut JoinSet<()>, grace: Duration) -> us
 #[derive(Clone)]
 pub struct ServerHandle {
     common_address: CommonAddress,
-    process: Arc<Process>,
+    groups: Arc<Groups>,
 }
 
 impl ServerHandle {
-    /// Registers a point of the station with its initial value (see [`ProcessImage::add_point`]).
+    /// Registers a point of the station with its initial value (see [`ProcessImage::add_point`]). The
+    /// point is registered in every redundancy group.
     pub fn add_point(
         &self,
         address: InformationObjectAddress,
         value: PointValue,
         stamped: bool,
     ) -> Result<(), ProcessError> {
-        lock(&self.process.group)
-            .image
+        self.groups
             .add_point(self.common_address, address, value, stamped)
     }
 
@@ -576,33 +703,24 @@ impl ServerHandle {
         address: InformationObjectAddress,
         group: u8,
     ) -> Result<(), ProcessError> {
-        lock(&self.process.group)
-            .image
-            .set_group(self.common_address, address, group)
+        self.groups.set_group(self.common_address, address, group)
     }
 
-    /// Sets the value of a point at `time`. A change is sent by the started connection.
+    /// Sets the value of a point at `time`. A change is sent by the started connection of every
+    /// redundancy group.
     pub fn update(
         &self,
         address: InformationObjectAddress,
         value: PointValue,
         time: Cp56Time2a,
     ) -> Result<Update, ProcessError> {
-        let result =
-            lock(&self.process.group)
-                .image
-                .update(self.common_address, address, value, time);
-        if let Ok(Update::Queued) = result {
-            self.process.queued.notify_one();
-        }
-        result
+        self.groups
+            .update(self.common_address, address, value, time)
     }
 
     /// The current value of a point.
     pub fn value(&self, address: InformationObjectAddress) -> Option<PointValue> {
-        lock(&self.process.group)
-            .image
-            .value(self.common_address, address)
+        self.groups.value(self.common_address, address)
     }
 }
 
@@ -632,7 +750,9 @@ async fn serve<S: Transport + 'static, H: Handler>(
     station: Arc<Station<H>>,
     peer: SocketAddr,
 ) {
-    let (id, superseded) = lock(&station.process.group).join();
+    // The connections of one controlling station address share a redundancy group (§10.2).
+    let process = station.groups.process_of(peer.ip());
+    let (id, superseded) = lock(&process.group).join();
     station.report(ServerEvent::Connected { id, peer });
     // Reports the end of the connection when it is dropped: at the end of this function, or when
     // the station closes the connection by force.
@@ -652,6 +772,7 @@ async fn serve<S: Transport + 'static, H: Handler>(
     let mut stopping = station.stop.subscribe();
     let mut connection = Connection {
         station: &station,
+        process: Arc::clone(&process),
         id,
         responder: Responder::new(station.common_address, station.selection_timeout),
         pending: VecDeque::new(),
@@ -677,7 +798,7 @@ async fn serve<S: Transport + 'static, H: Handler>(
                 }
                 None => break,
             },
-            () = station.process.queued.notified(), if connection.started => {}
+            () = process.queued.notified(), if connection.started => {}
             () = superseded.notified() => {
                 // The session closes the connection as §10.7 describes, and hands back its
                 // unacknowledged ASDUs. A full command channel is not waited for: the close
@@ -723,9 +844,9 @@ async fn serve<S: Transport + 'static, H: Handler>(
     // belong to its requests, and its end of initialization to its start: neither is sent
     // again on the connection that takes over (D-021).
     leftover.retain(|asdu| asdu.cot.cause() == cause::SPONTANEOUS);
-    lock(&station.process.group).leave(id, leftover);
+    lock(&process.group).leave(id, leftover);
     // The connection that takes over may be waiting for the events of the leftover ASDUs.
-    station.process.queued.notify_one();
+    process.queued.notify_one();
 }
 
 /// Reports the end of a connection when it is dropped. Without an end set, the connection was
@@ -750,6 +871,8 @@ impl Drop for ClosedReport {
 /// The state of one connection between the transport and the station.
 struct Connection<'a, H> {
     station: &'a Station<H>,
+    /// The redundancy group of the connection.
+    process: Arc<Process>,
     id: u64,
     responder: Responder,
     /// ASDUs to send, in order: the answers, the events and the ASDUs of earlier connections.
@@ -771,7 +894,7 @@ impl<H: Handler> Connection<'_, H> {
                     // Without a time the station cannot answer a clock synchronization.
                     return false;
                 };
-                let image = lock(&self.station.process.group);
+                let image = lock(&self.process.group);
                 let replies = self.responder.respond(
                     &self.station.handler,
                     &image.image,
@@ -784,7 +907,7 @@ impl<H: Handler> Connection<'_, H> {
             }
             Delivery::Transfer(state) => {
                 self.started = state == TransferState::Started;
-                let superseded = lock(&self.station.process.group).transfer(self.id, state);
+                let superseded = lock(&self.process.group).transfer(self.id, state);
                 self.station
                     .report(ServerEvent::Transfer { id: self.id, state });
                 for other in superseded {
@@ -824,7 +947,7 @@ impl<H: Handler> Connection<'_, H> {
         if !self.started {
             return;
         }
-        let mut group = lock(&self.station.process.group);
+        let mut group = lock(&self.process.group);
         if group.started != Some(self.id) {
             return;
         }

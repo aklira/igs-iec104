@@ -289,6 +289,33 @@ impl ProcessImage {
         Ok(())
     }
 
+    /// A copy of the points and their groups, with an empty queue: the redundancy group that a new
+    /// controlling station gets starts from the values of the station (§10.2, rule 7).
+    pub(crate) fn snapshot(&self) -> Self {
+        Self {
+            points: self.points.clone(),
+            events: VecDeque::new(),
+            capacity: self.capacity,
+            dropped: 0,
+            spontaneous: self.spontaneous,
+        }
+    }
+
+    /// Drops the queued ASDUs. The station's own copy of the points keeps no queue: each group sends its own.
+    pub(crate) fn clear_events(&mut self) {
+        self.events.clear();
+    }
+
+    /// Takes the queued ASDUs out of the image.
+    pub(crate) fn take_events(&mut self) -> VecDeque<Asdu> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Replaces the queued ASDUs of the image, which has the same capacity.
+    pub(crate) fn set_events(&mut self, events: VecDeque<Asdu>) {
+        self.events = events;
+    }
+
     /// Sets the value of a point at `time`. A change queues one spontaneous ASDU; the
     /// same value again queues nothing, whatever the time.
     pub fn update(
