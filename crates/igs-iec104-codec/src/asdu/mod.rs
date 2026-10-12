@@ -7,7 +7,7 @@
 //! profile rules that a decoded ASDU must satisfy.
 //!
 //! [`Asdu::decode`](crate::asdu::Asdu::decode) decodes every in-profile type ID. A type ID outside the
-//! profile is kept as received, with its octets ([`Body::Unsupported`]): its layout is unknown, and the
+//! profile is kept as received, with its octets ([`crate::asdu::Body::Unsupported`]): its layout is unknown, and the
 //! station answers it with cause 44. [`validate_profile`](crate::asdu::validate_profile) checks the
 //! rules of the profile (type, sequence form, cause of transmission, direction) and says which one
 //! failed.
