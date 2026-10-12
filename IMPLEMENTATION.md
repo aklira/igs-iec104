@@ -455,7 +455,7 @@ API: a maintainer reviews the API of U1 to U3 before it is implemented.
 | S3 Redundancy groups | [x] |
 | S4 `igs104-server` binary | [x] |
 | S5 Server interop, load and switchover ⛔ | [ ] |
-| X1 TLS | [ ] |
+| X1 TLS | [x] |
 | X2 Documentation and examples | [x] |
 | X3 Release readiness ⛔ | [ ] |
 | U1 Graceful server shutdown ⛔ | [x] |
