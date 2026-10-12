@@ -114,6 +114,33 @@ services:
       - ./bin:/bench/bin:ro
       - ./load:/bench/load:ro
 
+  # The TLS interop of X1 (tests/test_tls_interop.py): igs104-server with TLS, built in its own image from the
+  # repository (bench/tls/station.Dockerfile), and the j60870 peer as a TLS client. The key material is copied
+  # from the crate's test fixtures into bench/tls-material at test time (git-ignored).
+  tls-server:
+    build:
+      context: ..
+      dockerfile: bench/tls/station.Dockerfile
+    image: localhost/igs-iec104-station:tls
+    profiles: ["tls"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.60
+    command: ["--bind", "0.0.0.0:2404", "-c", "45", "--points", "/bench/s5/points.toml", "--tls-roots", "/bench/tls-material/roots.pem", "--tls-certificate", "/bench/tls-material/server.pem", "--tls-key", "/bench/tls-material/server.key"]
+    volumes:
+      - ./peer/s5:/bench/s5:ro
+      - ./tls-material:/bench/tls-material:ro
+
+  tls-peer:
+    build: ./peer/j60870
+    image: igs-iec104-j60870:bench
+    profiles: ["tls"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.61
+    volumes:
+      - ./tls-material:/bench/tls-material:ro
+
 networks:
   bench:
     ipam:

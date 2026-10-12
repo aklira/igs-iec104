@@ -1,0 +1,12 @@
+# The build context of the images: the sources and the bench's Rust probe, not the outputs and the bench
+# state. The standards (docs/spec) are private and never leave the local machine.
+.git
+**/target
+bench/bin
+bench/captures
+bench/load
+bench/tls-material
+bench/.pytest_cache
+**/__pycache__
+docs/spec
+.claude

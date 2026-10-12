@@ -10,17 +10,31 @@
 //
 // Usage: java -cp classes:j60870.jar Driver --host 172.31.104.40 --port 2404 --common-address 45 \
 //        --procedure single
+// With --tls-truststore FILE the connection is secured (IEC 62351-3): the trust anchors are the certificates of
+// that PEM file, and --tls-keystore FILE gives the client certificate, a PKCS12 file (none, when the option is
+// left out). --tls-password gives the password of the keystore.
 //
 // Output: one line per answer ("asdu ..."), then one line per procedure:
 //   OUTCOME <procedure> <passed|refused|timeout> <detail>
 // Exit status 0 when the outcome line was printed, 2 for a usage error, 1 when the connection failed.
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
+import javax.net.SocketFactory;
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 import org.openmuc.j60870.ASdu;
 import org.openmuc.j60870.ASduType;
 import org.openmuc.j60870.CauseOfTransmission;
@@ -67,6 +81,9 @@ public final class Driver {
     public static void main(String[] args) throws Exception {
         String host = null;
         String procedure = null;
+        String keystore = null;
+        String truststore = null;
+        String password = "";
         int port = 2404;
         int commonAddress = 1;
         for (int i = 0; i + 1 < args.length; i += 2) {
@@ -75,6 +92,9 @@ public final class Driver {
                 case "--port" -> port = Integer.parseInt(args[i + 1]);
                 case "--common-address" -> commonAddress = Integer.parseInt(args[i + 1]);
                 case "--procedure" -> procedure = args[i + 1];
+                case "--tls-keystore" -> keystore = args[i + 1];
+                case "--tls-truststore" -> truststore = args[i + 1];
+                case "--tls-password" -> password = args[i + 1];
                 default -> throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -83,10 +103,50 @@ public final class Driver {
             System.exit(2);
         }
         Driver driver = new Driver();
-        System.exit(driver.run(host, port, commonAddress, procedure));
+        SocketFactory factory = truststore == null ? null : tlsFactory(keystore, truststore, password);
+        System.exit(driver.run(host, port, commonAddress, procedure, factory));
     }
 
-    private int run(String host, int port, int commonAddress, String procedure) throws Exception {
+    /** The socket factory of a TLS connection: the client certificate (when given) and the trust anchors. */
+    private static SocketFactory tlsFactory(String keystore, String truststore, String password) throws Exception {
+        char[] secret = password.toCharArray();
+        KeyManager[] keys = null;
+        if (keystore != null) {
+            KeyStore store = load(keystore, secret);
+            KeyManagerFactory managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            managers.init(store, secret);
+            keys = managers.getKeyManagers();
+        }
+        KeyStore anchors = KeyStore.getInstance("PKCS12");
+        anchors.load(null, null);
+        int index = 0;
+        for (Certificate certificate : pemCertificates(truststore)) {
+            anchors.setCertificateEntry("anchor-" + index++, certificate);
+        }
+        TrustManagerFactory trusted = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        trusted.init(anchors);
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(keys, trusted.getTrustManagers(), null);
+        return context.getSocketFactory();
+    }
+
+    /** The certificates of a PEM file, in order. */
+    private static java.util.Collection<? extends Certificate> pemCertificates(String file) throws Exception {
+        try (InputStream in = Files.newInputStream(Path.of(file))) {
+            return CertificateFactory.getInstance("X.509").generateCertificates(in);
+        }
+    }
+
+    private static KeyStore load(String file, char[] secret) throws Exception {
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        try (InputStream in = Files.newInputStream(Path.of(file))) {
+            store.load(in, secret);
+        }
+        return store;
+    }
+
+    private int run(String host, int port, int commonAddress, String procedure, SocketFactory factory)
+            throws Exception {
         ConnectionEventListener listener = new ConnectionEventListener() {
             @Override
             public void newASdu(Connection connection, ASdu asdu) {
@@ -106,12 +166,20 @@ public final class Driver {
                 System.out.println("closed " + cause.getMessage());
             }
         };
-        connection = new ClientConnectionBuilder(host)
+        ClientConnectionBuilder builder = new ClientConnectionBuilder(host)
                 .setPort(port)
-                .setConnectionEventListener(listener)
-                .build();
+                .setConnectionEventListener(listener);
+        if (factory != null) {
+            builder.setSocketFactory(factory);
+        }
+        connection = builder.build();
         try {
-            connection.startDataTransfer();
+            try {
+                connection.startDataTransfer();
+            } catch (IOException error) {
+                System.err.println("the data transfer did not start: " + error);
+                return 1;
+            }
             if (!transferStarted.await(PATIENCE_SECONDS, TimeUnit.SECONDS)) {
                 System.err.println("the data transfer did not start");
                 return 1;
