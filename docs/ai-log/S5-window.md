@@ -64,3 +64,50 @@ The results at 100 to 500 changes per second sit on the 500 ms threshold, and ar
 
 `Delivery` gains the variant `Window`. A `match` on `Delivery` without a wildcard arm must add one; the crate's
 own code and examples are updated. The change is recorded in the CHANGELOG.
+
+## Investigation of the 500 ms threshold for the changes
+
+Three measurements, one session each (`bench/peer/j60870/Load.java`, mode `session`):
+
+1. **The backlog before the connection.** The first second of a session carries the changes raised while
+   the station had no connection (`docs/igs104-server.md`: they wait for the next one). At 50 changes per
+   second, these reached 17 s of latency. From the first second on, the latency was 3 to 7 ms, interrogations
+   included. This part of the 99th percentile is a measurement artifact of the start, not a property of the
+   steady state.
+2. **The reading thread of the peer.** The first version printed one line per change inside the reading
+   thread. Printing them at the end of the session moved the steady-state 99th percentile at 500 changes per
+   second from 343 ms to 259 ms: a part of the tail came from the peer, but not most of it.
+3. **The interrogation.** At 500 changes per second, the steady-state changes over 100 ms were exactly 500 of
+   14 500 (the 99th percentile is 259 ms, the maximum 267 ms). They all arrived in the same second, at the
+   interrogation of the 15 s cycle. The load points all change in the same tick (they share one period and
+   start together), so each second brings a burst of 500 changes. A change raised while an interrogation is
+   being answered waits behind the answers: the station's queue is first in, first out, with no priority for
+   spontaneous changes.
+
+So the 500 ms threshold is exceeded by the design of the load, which makes every burst coincide with the
+interrogations, and by the first-in, first-out queue, which makes the changes wait for the answers. Neither is
+a failure of a single procedure. Decisions for the maintainer: give spontaneous changes priority over the answers
+of an interrogation (a change in the station's queue), or accept the interrogation's duration as the bound of a
+change's wait under load; and decide whether a station may keep changes indefinitely while no client is
+connected. The load test can also spread the change phases so that the bursts do not all coincide.
+
+## Revised threshold for the changes, and the rate sweep
+
+The maintainer accepted that the duration of an interrogation bounds the wait of a spontaneous change under
+load: the station's queue is first in, first out, and an interrogation is answered before the changes behind
+it. The load test now checks the 99th percentile of the changes against the longest interrogation of the same
+session, and the load points have staggered periods so that their changes do not arrive in one burst.
+
+Sweep after the change (one session of 120 s, an interrogation every 15 s, a command every 500 ms; the nominal
+rate is the number of changing points, the measured rate is the number of changes received over the session):
+
+| Nominal | Measured | Interrogations (p99) | Changes (p99) | Commands (p99) | Result |
+| --- | --- | --- | --- | --- | --- |
+| 50 | 49 per second | 636 ms | 475 ms | 0 ms | passed |
+| 100 | 96 per second | 631 ms | 426 ms | 0 ms | passed |
+| 200 | 183 per second | 630 ms | 421 ms | 0 ms | passed |
+| 500 | 407 per second | 628 ms | 426 ms | 1 ms | passed |
+| 1 000 | 697 per second | 642 ms | 423 ms | 1 ms | passed |
+
+The changes stay below the longest interrogation, and every command is confirmed. The load test does not yet
+cover the switchover under load, which remains for S5.

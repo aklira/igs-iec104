@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .compose import BENCH_DIR
+from .compose import BENCH_DIR, Bench
 from .probe import TARGET
 
 SERVER_BINARY = "igs104-server"
 BIN_DIR = BENCH_DIR / "bin"
 CONTAINER_SERVER = "172.31.104.40"
+CONTAINER_LOAD_SERVER = "172.31.104.50"
 CONTAINER_BINARY = f"/bench/bin/{SERVER_BINARY}"
 PEER_SERVICE = "s5-peer"
 SERVER_SERVICE = "s5-server"
@@ -85,3 +87,15 @@ def parse_outcome(output: str) -> Outcome:
         raise ValueError(f"expected one OUTCOME line, got {len(lines)}:\n{output}")
     _, procedure, kind, detail = lines[0].split(" ", 3)
     return Outcome(procedure, kind, detail)
+
+
+def wait_listening(bench: Bench, service: str, timeout: float = 60) -> None:
+    """Waits until the station in `service` listens on port 2404 (hexadecimal 0964 in /proc/net/tcp)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        probe = bench.exec(service, "grep", "-q", ":0964 .* 0A ", "/proc/net/tcp", check=False)
+        if probe.returncode == 0:
+            return
+        time.sleep(1)
+    logs = bench.run("logs", service, check=False)
+    raise TimeoutError(f"the station is not listening\n{logs.stdout}{logs.stderr}")

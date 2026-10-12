@@ -17,8 +17,6 @@ This test does not measure latency and does not test the switchover: S5 covers t
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from igs_bench import s5
@@ -47,18 +45,6 @@ MATRIX = [
 ]
 
 
-def _wait_listening(bench: Bench, timeout: float = 60) -> None:
-    """Waits until the station listens on port 2404 (hexadecimal 0964 in /proc/net/tcp)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        probe = bench.exec(SERVER, "grep", "-q", ":0964 .* 0A ", "/proc/net/tcp", check=False)
-        if probe.returncode == 0:
-            return
-        time.sleep(1)
-    logs = bench.run("logs", SERVER, check=False)
-    raise TimeoutError(f"the station is not listening\n{logs.stdout}{logs.stderr}")
-
-
 @pytest.fixture(scope="module")
 def station():
     s5.build_server()
@@ -66,7 +52,7 @@ def station():
     bench.down()
     bench.up(SERVER, PEER)
     try:
-        _wait_listening(bench)
+        s5.wait_listening(bench, SERVER)
         yield bench
     finally:
         bench.down()
