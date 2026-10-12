@@ -67,7 +67,24 @@ The first run pulls the images (about 600 MB).
 | `igs_bench/probe.py` | builds the L4 probe (static musl binary) into `bin/` |
 | `igs_bench/client.py` | builds the `igs104-client` binary (static musl) into `bin/` (T4) |
 | `probe/` | the L4 probe: a Rust program that runs igs-iec104 scenarios (not published) |
+| `igs_bench/s5.py` | builds the static `igs104-server` (the station under test) into `bin/`, and parses the driver's outcome (S5) |
+| `peer/j60870/` | the second reference peer of S5: a driver that runs one procedure of the OpenMUC j60870 library (GPL v3), built as a local image |
+| `peer/s5/` | the points of the station under test in S5 |
 | `tests/` | scenarios, one pytest file per task |
+
+## The S5 interop matrix
+
+The station under test is `igs104-server`, and the second reference peer is the OpenMUC j60870 library
+(GNU GPL v3) run as a black box in a local image. The library is never distributed. Its image is built
+from `peer/j60870/Dockerfile`, which fetches the library from Maven Central and checks its SHA-256:
+
+```
+podman-compose --profile s5 build s5-peer
+python3 -m pytest tests/test_s5_interop_matrix.py
+```
+
+The profile `s5` keeps these services out of the default bench. Two rows are known gaps (reset, and a test
+command without time tag): see `docs/ai-log/S5.md`.
 
 ## Scenarios
 
@@ -77,6 +94,7 @@ The first run pulls the images (about 600 MB).
 | `tests/test_l4_interop.py` | L4 | igs-iec104 against both reference peers: STARTDT, interrogation and STOPDT; TESTFR in both directions; the window of k; the acknowledgement after w and within t2. The probe's capture is checked frame by frame |
 
 | `tests/test_l5_faults.py` | L5 | fault injection between igs-iec104 and both reference peers: t1 expiry with a silent peer, late acknowledgements within and beyond t1, dropped and duplicated frames (disturbed sequence). The relay in the probe applies the faults |
+| `tests/test_s5_interop_matrix.py` | S5 | `igs104-server` against the j60870 peer, one row per procedure: the interrogations, counter, read, clock, test, the five commands with select and execute, a command to a point that takes none (refused, cause 47). Two rows are known gaps (reset, test without time tag) and check the gap itself |
 | `tests/test_t4_client_matrix.py` | T4 | `igs104-client` against the reference server, one row per procedure: start and stop, interrogations, counter, read, clock, test, the six commands with select and execute, with and without time tag; and a refused connection. Each row checks the exit status, the message and the answers on the wire, including the P/N bit. Five rows are positive; the others are refusals by the reference server (see `docs/ai-log/T4.md`) |
 
 T4 scenarios need the static client: `client.build()` runs the same build for

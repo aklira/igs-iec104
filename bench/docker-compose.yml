@@ -79,6 +79,28 @@ services:
       - ./captures:/captures
       - ./bin:/bench/bin:ro
 
+  # The S5 interop matrix (tests/test_s5_interop_matrix.py) runs in its own profile. The station under test is
+  # the igs104-server binary, built for the static target into bench/bin, on the bench network.
+  s5-server:
+    image: docker.io/nicolaka/netshoot@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
+    profiles: ["s5"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.40
+    command: ["/bench/bin/igs104-server", "--bind", "0.0.0.0:2404", "--common-address", "45", "--points", "/bench/s5/points.toml"]
+    volumes:
+      - ./bin:/bench/bin:ro
+      - ./peer/s5:/bench/s5:ro
+
+  # The second reference peer (bench/peer/j60870): a controlling station that runs one procedure per exec.
+  s5-peer:
+    build: ./peer/j60870
+    image: igs-iec104-j60870:bench
+    profiles: ["s5"]
+    networks:
+      bench:
+        ipv4_address: 172.31.104.41
+
 networks:
   bench:
     ipam:

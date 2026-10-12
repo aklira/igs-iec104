@@ -31,9 +31,16 @@ def _engine() -> list[str]:
 class Bench:
     """One running instance of bench/docker-compose.yml."""
 
-    def __init__(self, capture_name: str, env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        capture_name: str,
+        env: dict[str, str] | None = None,
+        profiles: tuple[str, ...] = (),
+    ) -> None:
         self.capture_name = capture_name
         self._cmd = [*_engine(), "-p", PROJECT, "-f", str(BENCH_DIR / "docker-compose.yml")]
+        for profile in profiles:
+            self._cmd += ["--profile", profile]
         self._env = {**os.environ, "BENCH_CAPTURE": capture_name, **(env or {})}
 
     def run(self, *args: str, timeout: float = 120, check: bool = True) -> subprocess.CompletedProcess[str]:

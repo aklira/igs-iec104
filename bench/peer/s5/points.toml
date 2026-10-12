@@ -1,0 +1,51 @@
+# The points of the station under test in the S5 interop matrix (bench/tests/test_s5_interop_matrix.py).
+# Address 672 is a plain single point: it takes no command. Addresses 10005 to 10010 take one command
+# each, of the type their name gives (C_SC, C_DC, C_SE_NA, C_SE_NB, C_SE_NC). Address 20 is a counter.
+
+[[point]]
+address = 672
+kind = "single"
+group = 1
+simulation = "toggle"
+period_ms = 5000
+
+[[point]]
+address = 984
+kind = "normalized"
+group = 1
+simulation = "ramp"
+period_ms = 1000
+increment = 1000
+
+[[point]]
+address = 10005
+kind = "single"
+command = true
+
+[[point]]
+address = 10006
+kind = "double"
+command = true
+
+[[point]]
+address = 10008
+kind = "normalized"
+command = true
+
+[[point]]
+address = 10009
+kind = "scaled"
+command = true
+
+[[point]]
+address = 10010
+kind = "float"
+command = true
+
+[[point]]
+address = 20
+kind = "counter"
+group = 2
+simulation = "count"
+period_ms = 10000
+increment = 1

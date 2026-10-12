@@ -299,3 +299,4 @@ substituted time. The API names it `substituted`.
 | Source | Licence | Use | Provenance |
 | --- | --- | --- | --- |
 | `iec104` crate (Matheus Zaniolo) | MIT, `LICENSE` file checked | Possible inspiration or code | To be confirmed with the author |
+| OpenMUC j60870 1.8.0 (library, javadoc read from Maven Central) | GNU GPL v3 | Second reference peer of the S5 interop matrix, in a local image run as a separate process; not linked, not distributed | Approved by the maintainer on 2026-10-12 (docs/ai-log/S5.md); no source or class file read |

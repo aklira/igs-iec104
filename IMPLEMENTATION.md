@@ -337,6 +337,8 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
   switchover under load.
 - Gate: phase 4 exit criterion reviewed by a maintainer.
 - Done when: interop matrix passes, load test meets agreed latency, switchover loses no data.
+- Status: the interop matrix is done with the j60870 peer (`bench/tests/test_s5_interop_matrix.py`, 13 rows,
+  two of them known gaps; `docs/ai-log/S5.md`). The load test and the switchover under load remain.
 
 ### Phase 5 — TLS, documentation, release
 
