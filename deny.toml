@@ -10,6 +10,12 @@ all-features = true
 
 [advisories]
 version = 2
+# RUSTSEC-2024-0449: unsafe-libyaml is archived and receives no fixes. It is reached only through
+# serde_yaml, in the development tool xtask, which is not published and reads only the local
+# profile data. Replacing the YAML parser is a separate decision, pending the maintainer.
+ignore = [
+    { id = "RUSTSEC-2024-0449", reason = "development tool xtask only; not published; replacing serde_yaml is pending" },
+]
 
 [licenses]
 version = 2
