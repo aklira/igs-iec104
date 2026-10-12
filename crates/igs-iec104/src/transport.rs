@@ -76,9 +76,20 @@ pub enum Delivery {
     Unacknowledged(Vec<Asdu>),
 }
 
-/// Opens a TCP connection to `address`, giving up after `t0` (§9.6).
+/// Opens a TCP connection to `address`, giving up after `t0` (§9.6). The connection is set up with
+/// [`without_delay`].
 pub async fn connect(address: SocketAddr, t0: Duration) -> Result<TcpStream, TransportError> {
-    within_t0(t0, TcpStream::connect(address)).await
+    let stream = within_t0(t0, TcpStream::connect(address)).await?;
+    without_delay(&stream).map_err(TransportError::Connect)?;
+    Ok(stream)
+}
+
+/// Turns off Nagle's algorithm on a connection. The frames of the protocol are short, and the peer
+/// acknowledges them in turn: with the algorithm on, a frame waits for the acknowledgement of the
+/// frame before it, and the peer's delayed acknowledgement holds it back by tens of milliseconds.
+/// Nothing else in this crate holds a frame back, so the delay would be the algorithm's alone.
+pub fn without_delay(stream: &TcpStream) -> io::Result<()> {
+    stream.set_nodelay(true)
 }
 
 /// Runs the TLS handshake of a client for at most t0 (task X1). `host` is the name the server
@@ -260,6 +271,31 @@ fn now() -> Instant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_connection_does_not_wait_to_coalesce_its_frames() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (accepted, connected) =
+            tokio::join!(listener.accept(), connect(address, Duration::from_secs(5)));
+        let (accepted, _) = accepted.expect("accept");
+        let connected = connected.expect("connect");
+        assert!(
+            connected.nodelay().expect("option"),
+            "the client side waits to coalesce"
+        );
+        assert!(
+            !accepted.nodelay().expect("option"),
+            "a fresh connection is not set up yet"
+        );
+        without_delay(&accepted).expect("option");
+        assert!(
+            accepted.nodelay().expect("option"),
+            "the station side waits to coalesce"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_connection_not_established_within_t0_times_out() {

@@ -43,7 +43,7 @@ use crate::clock;
 use crate::error::TransportError;
 use crate::process_image::{PointValue, ProcessError, ProcessImage, Update};
 use crate::tls::Secure;
-use crate::transport::{run, secure_server, Command, Delivery, Transport};
+use crate::transport::{run, secure_server, without_delay, Command, Delivery, Transport};
 
 pub mod respond;
 
@@ -498,17 +498,22 @@ impl<H: Handler> Server<H> {
             tokio::select! {
                 () = &mut stop => break,
                 accepted = self.listener.accept() => match accepted {
-                    Ok((stream, peer)) => match &self.tls {
-                        None => {
-                            connections.spawn(serve(stream, Arc::clone(&self.station), peer));
-                        }
-                        Some(tls) => {
-                            connections.spawn(serve_secured(
-                                tls.clone(),
-                                stream,
-                                Arc::clone(&self.station),
-                                peer,
-                            ));
+                    Ok((stream, peer)) => {
+                        // A connection that cannot be set up this way is served all the same, with
+                        // the delay of the algorithm (transport::without_delay).
+                        let _ = without_delay(&stream);
+                        match &self.tls {
+                            None => {
+                                connections.spawn(serve(stream, Arc::clone(&self.station), peer));
+                            }
+                            Some(tls) => {
+                                connections.spawn(serve_secured(
+                                    tls.clone(),
+                                    stream,
+                                    Arc::clone(&self.station),
+                                    peer,
+                                ));
+                            }
                         }
                     },
                     Err(_) => time::sleep(ACCEPT_RETRY).await,

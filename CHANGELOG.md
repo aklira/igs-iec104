@@ -55,6 +55,10 @@ All notable changes to this project are recorded in this file. The format follow
 
 ### Fixed
 
+- The TCP connections of the client and of the station turn off Nagle's algorithm. A frame used to wait
+  for the acknowledgement of the frame before it, and the peer's delayed acknowledgement held it back by
+  tens of milliseconds: on the interop bench, a general interrogation of 10 010 points took 63 s, and
+  15.8 s after the change (`docs/ai-log/S5-nodelay.md`).
 - `igs-iec104-link` reports a change of the transfer state as `Action::Transfer`, in order with the
   ASDUs of the same read. The change used to follow the whole read, so an application could receive
   an ASDU before the start of the data transfer, when the confirmation and the ASDU came in one read.
