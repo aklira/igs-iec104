@@ -55,10 +55,17 @@ All notable changes to this project are recorded in this file. The format follow
 
 ### Fixed
 
+- A station sends the ASDUs it holds back for a full window as soon as an acknowledgement opens the window.
+  They used to wait for the next tick of a 10 ms retry timer, one tick for each window of frames: a general
+  interrogation of 10 010 points took 15.8 s on the interop bench, and 0.7 s after the change
+  (`docs/ai-log/S5-window.md`).
 - The TCP connections of the client and of the station turn off Nagle's algorithm. A frame used to wait
   for the acknowledgement of the frame before it, and the peer's delayed acknowledgement held it back by
   tens of milliseconds: on the interop bench, a general interrogation of 10 010 points took 63 s, and
   15.8 s after the change (`docs/ai-log/S5-nodelay.md`).
+- `Delivery::Window`: a controlled session reports that an acknowledgement opened its window of I frames.
+  A controlling connection does not report it. `Delivery` has the new variant `Window`, so a match on it
+  that has no arm for it must add one.
 - `igs-iec104-link` reports a change of the transfer state as `Action::Transfer`, in order with the
   ASDUs of the same read. The change used to follow the whole read, so an application could receive
   an ASDU before the start of the data transfer, when the confirmation and the ASDU came in one read.

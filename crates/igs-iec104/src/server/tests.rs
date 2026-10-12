@@ -342,6 +342,31 @@ async fn a_full_window_loses_no_event_across_a_switchover_and_keeps_their_order(
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_acknowledgement_that_opens_the_window_sends_the_held_events_at_once() {
+    // Thirty events against a window of twelve: the peer acknowledges them in turn, and each
+    // acknowledgement opens the window again. The held events must follow at once, not on the
+    // retry timer, which would cost a tick for each window of frames.
+    let (station, handle) = station();
+    for n in 1u8..=30 {
+        publish(&handle, n);
+    }
+    settle().await;
+
+    let mut controller = controller(&station);
+    controller.start().await;
+    controller.wait_started().await;
+    let began = tokio::time::Instant::now();
+    for n in 1u8..=30 {
+        assert_eq!(controller.next_value().await, f32::from(n), "event {n}");
+    }
+    let waited = began.elapsed();
+    assert!(
+        waited < super::RETRY,
+        "the held events waited {waited:?} for the retry timer"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn events_raised_while_no_connection_is_started_wait_for_the_next_one() {
     let (station, handle) = station();
     for n in 1u8..=3 {

@@ -812,6 +812,8 @@ impl<H: Handler> Connection<'_, H> {
             Delivery::Rejected(_) => {}
             // A controlled session does not report its transmissions.
             Delivery::Transmitted(_) => {}
+            // The loop flushes the held ASDUs after every delivery: nothing to do here.
+            Delivery::Window => {}
         }
         true
     }

@@ -70,6 +70,9 @@ pub enum Delivery {
     /// session of the controlling role reports it, so that a controlling station knows on which
     /// connection its request left. It comes before any answer to that request.
     Transmitted(Asdu),
+    /// An acknowledgement of the peer opened the window of I frames again. Only a controlled session
+    /// reports it, so that the station sends at once the ASDUs it holds back for the full window.
+    Window,
     /// The ASDUs sent on the connection and not acknowledged when it ended, oldest first.
     /// They are delivered once, after the last I frame has been sent, before the connection
     /// ends. A redundancy group sends them again on another connection (§10.5, §10.6).
@@ -162,6 +165,7 @@ pub async fn run_shared<S: Transport>(
     deliveries: &mpsc::Sender<Delivery>,
 ) -> Result<(), TransportError> {
     let report_transmissions = config.role() == Role::Controlling;
+    let report_window = config.role() == Role::Controlled;
     let mut session = Session::new(config, now());
     let outcome = drive(
         &mut stream,
@@ -169,6 +173,7 @@ pub async fn run_shared<S: Transport>(
         commands,
         deliveries,
         report_transmissions,
+        report_window,
     )
     .await;
     // The ASDUs the peer did not acknowledge are handed back, whatever ended the connection.
@@ -190,6 +195,7 @@ async fn drive<S: Transport>(
     commands: &mut mpsc::Receiver<Command>,
     deliveries: &mpsc::Sender<Delivery>,
     report_transmissions: bool,
+    report_window: bool,
 ) -> Result<(), TransportError> {
     loop {
         let event = tokio::select! {
@@ -203,6 +209,7 @@ async fn drive<S: Transport>(
             },
             () = wait_until(session.next_deadline()) => Event::Tick,
         };
+        let outstanding = session.outstanding();
         for action in session.handle(event, now()) {
             match action {
                 Action::Send(apdu) => {
@@ -235,6 +242,10 @@ async fn drive<S: Transport>(
                 }
                 Action::Close(reason) => return Err(TransportError::Closed(reason)),
             }
+        }
+        let opened = report_window && session.outstanding() < outstanding;
+        if opened && deliveries.send(Delivery::Window).await.is_err() {
+            return Ok(());
         }
     }
 }
