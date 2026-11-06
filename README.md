@@ -13,6 +13,23 @@ or `--no-default-features --features rustls`. The demo station `igs104-server` s
 of points, or the points of a TOML file given with `--points`. See
 [CHANGELOG.md](CHANGELOG.md) for the details.
 
+## Architecture
+
+![Architecture of the stack: the command-line stations, the station runtime, the link session, the protocol codec and the TLS backends](docs/diagram.png)
+
+The diagram shows the components and the main calls between them. The name in brackets is the
+source file of each component. The workspace has three library crates, from the lowest layer up.
+Each crate depends only on the crates above it in this list:
+
+- [`igs-iec104-codec`](crates/igs-iec104-codec/): APCI framing, the ASDU header and body, the
+  information elements and the time formats. It does no I/O.
+- [`igs-iec104-link`](crates/igs-iec104-link/): the APCI session state machine, sans I/O. It keeps
+  the send and receive sequence numbers, the window sizes and the timers, and it runs STARTDT and
+  STOPDT.
+- [`igs-iec104`](crates/igs-iec104/): the async client and controlled station on Tokio, the
+  redundancy groups, the process image, the station clock and the TLS backends. It also holds the
+  two command-line binaries.
+
 ## Quick start
 
 Run the tests of the workspace:
