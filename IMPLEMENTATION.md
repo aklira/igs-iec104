@@ -373,6 +373,14 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
   (redundancy switch, low-level transport, TLS security events, rustls, offline codec) are not part of
   this task.
 
+**X3-publish — Initial development publication (maintainer requested)**
+- Depends: X2, X4.
+- Produce: publish the existing 0.1.0 library crates on crates.io, with package metadata,
+  README and license files; record checks and publication in docs/ai-log/X3-publish.md.
+- Authorization: the maintainer explicitly requested publication in this session.
+- Done when: the standard gate and publish dry-run pass, and crates.io serves all three
+  0.1.0 packages. This does not complete X3 or waive the 1.0 release gates.
+
 **X3 — Release readiness** ⛔
 - Depends: all previous tasks.
 - Produce: release checklist in `docs/RELEASE.md`; coverage ≥ 85 % codec and ≥ 75 % link/server
@@ -472,6 +480,7 @@ API: a maintainer reviews the API of U1 to U3 before it is implemented.
 | X1 TLS | [x] |
 | X2 Documentation and examples | [x] |
 | X4 Usage examples | [x] |
+| X3-publish Initial development publication | [ ] |
 | X3 Release readiness ⛔ | [ ] |
 | U1 Graceful server shutdown ⛔ | [x] |
 | U2 Server connection and transfer events ⛔ | [x] |

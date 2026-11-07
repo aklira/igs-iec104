@@ -10,6 +10,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/igs-iec104-link"
+keywords = ["iec104", "iec60870", "scada", "telecontrol"]
+categories = ["network-programming"]
 
 [lints.clippy]
 unwrap_used = "deny"

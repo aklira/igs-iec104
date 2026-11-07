@@ -10,6 +10,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/igs-iec104"
+keywords = ["iec104", "iec60870", "scada", "telecontrol"]
+categories = ["network-programming"]
 
 [lints.clippy]
 unwrap_used = "deny"
@@ -32,13 +36,13 @@ rustls = ["dep:rustls", "dep:tokio-rustls"]
 igs-iec104-codec = { path = "../igs-iec104-codec", version = "0.1.0" }
 igs-iec104-link = { path = "../igs-iec104-link", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 # serde and toml read the points file of igs104-server (task S4, approved by the maintainer).
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 # rustls with the ring provider (task X1). ring is Apache-2.0 AND ISC; it adds a second windows-sys,
 # which cargo deny reports as a duplicate warning.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
 # tokio-rustls adapts a rustls connection to tokio streams (task X1, approved by the maintainer).
 # Its default provider is aws-lc-rs, which is left out: the ring provider above is used.
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"], optional = true }
@@ -49,7 +53,7 @@ tokio-openssl = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # test-util gives tokio::time::pause (approved for T1, see docs/ai-log/T1.md).
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "test-util", "time"] }
+tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "sync", "test-util", "time"] }
 # proptest is the dev dependency approved for C6 (docs/ai-log/C6.md).
 proptest = "1.11.0"
 

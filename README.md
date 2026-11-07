@@ -2,7 +2,7 @@
 
 Industrial-grade IEC 60870-5-104 protocol stack for SCADA and telecontrol, written in Rust.
 
-**Status: pre-release (0.1.0, not published).** The codec, the link session, the async client and
+**Status: initial development release (0.1.0).** The codec, the link session, the async client and
 controlled station with their redundancy groups, and the two binaries are implemented and tested.
 TLS (IEC 62351-3) runs over OpenSSL, the default feature `openssl`, which offers every mandatory item
 of the profile, renegotiates TLS 1.2 sessions and updates the keys of TLS 1.3 sessions. The feature
