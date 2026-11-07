@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: 2026 The igs-iec104 contributors
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish to crates.io
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crates-io-publish
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    if: github.repository == 'aklira/igs-iec104'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      packages: ${{ steps.plan.outputs.packages }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a commit included in main
+        run: git merge-base --is-ancestor HEAD origin/main
+      - name: Plan release
+        id: plan
+        run: python3 .github/scripts/plan_release.py
+      - name: Test release planning
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2
+        with:
+          tool: cargo-deny
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+      - name: Documentation
+        run: cargo doc --workspace --no-deps --all-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Audit dependencies
+        run: cargo deny check
+      - name: Dry-run publication
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          RELEASE_PACKAGES: ${{ steps.plan.outputs.packages }}
+        run: |
+          read -r -a packages <<< "$RELEASE_PACKAGES"
+          args=()
+          for package in "${packages[@]}"; do args+=(-p "$package"); done
+          cargo publish --dry-run --registry crates-io --all-features --locked "${args[@]}"
+
+  publish:
+    needs: validate
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish library crates in dependency order
+        env:
+          RELEASE_PACKAGES: ${{ needs.validate.outputs.packages }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          read -r -a packages <<< "$RELEASE_PACKAGES"
+          args=()
+          for package in "${packages[@]}"; do args+=(-p "$package"); done
+          cargo publish --registry crates-io --all-features --locked "${args[@]}"

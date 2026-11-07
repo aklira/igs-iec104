@@ -30,7 +30,13 @@ jobs:
       - name: Install cargo tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-llvm-cov
+          tool: cargo-deny,cargo-llvm-cov,actionlint
+
+      - name: Validate workflows
+        run: actionlint
+
+      - name: Test release planning
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
       - name: Format
         run: cargo fmt --all --check

@@ -388,6 +388,13 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
   retain Tokio 1.54.1 from the remote lockfile and record the reconciliation.
 - Done when: the standard gate passes, origin/main is an ancestor of main and the worktree is clean.
 
+**X3-ci — Automatic crates.io publication**
+- Depends: X3-publish.
+- Read: existing CI, crate manifests, release checklist and official trusted-publishing documentation.
+- Produce: tag-triggered publishing with OIDC, version checks, retry planning, tests and setup instructions.
+- Done when: workflow validation, release-planning tests, the standard gate and publication dry-run pass.
+  One-time registry authorization and GitHub activation are documented; no push, tag or new release is made.
+
 **X3 — Release readiness** ⛔
 - Depends: all previous tasks.
 - Produce: release checklist in `docs/RELEASE.md`; coverage ≥ 85 % codec and ≥ 75 % link/server
@@ -489,6 +496,7 @@ API: a maintainer reviews the API of U1 to U3 before it is implemented.
 | X4 Usage examples | [x] |
 | X3-publish Initial development publication | [x] |
 | X3-sync Reconcile the published release branch | [x] |
+| X3-ci Automatic crates.io publication | [x] |
 | X3 Release readiness ⛔ | [ ] |
 | U1 Graceful server shutdown ⛔ | [x] |
 | U2 Server connection and transfer events ⛔ | [x] |
