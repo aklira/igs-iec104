@@ -46,18 +46,30 @@ source commit (3cf5b24).
 The initial development publication is tracked separately from the pending X3 gate.
 
 
-## Publication blocked
+## Initial upload blocker (resolved)
 
-Cargo packaged and verified all three crates, then crates.io rejected the first
-upload (igs-iec104-codec) with HTTP 400: the account needs a verified email address.
-The link and async crates were not uploaded. All three crate endpoints still
-returned HTTP 404 after the attempt. No version has been published.
+The first attempt reached crates.io, which rejected the codec upload with HTTP
+400 because the account email was not verified. No crate was published by that
+attempt. The maintainer then confirmed (translated): "It is done", in reply to
+the request to verify the account email. The authorized publication was retried.
 
-The maintainer must verify the account email at
-https://crates.io/settings/profile before the publication can be retried.
-The root README continues to state that 0.1.0 is not published.
-X3-publish remains unticked, as do the original 1.0 release gates.
+## Publication receipt
+
+All three 0.1.0 versions were uploaded successfully from clean source commit
+c586279, in dependency order. Cargo waited for each version to appear in the
+registry. The crates.io version API independently confirmed each version exists
+and is not yanked:
+
+| Crate | Published at (UTC, 2026-11-07) | Registry page |
+| --- | --- | --- |
+| igs-iec104-codec | 18:32:46 | https://crates.io/crates/igs-iec104-codec/0.1.0 |
+| igs-iec104-link | 18:32:48 | https://crates.io/crates/igs-iec104-link/0.1.0 |
+| igs-iec104 | 18:32:51 | https://crates.io/crates/igs-iec104/0.1.0 |
+
+The root README now links to the published development release. X3-publish is
+complete in IMPLEMENTATION.md; the original 1.0 release gates remain pending.
 
 The token was provided through CARGO_REGISTRY_TOKEN in the child environment.
 It was not printed, committed, or saved to Cargo credentials.
-No push or tag was made.
+No push or tag was made. Only documentation and progress records changed after
+the successful standard gate; the published source and dependencies are unchanged.

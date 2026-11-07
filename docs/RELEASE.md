@@ -17,10 +17,14 @@ approve or complete the 1.0 release gates.
 
 ## Current publication status
 
-Preparation checks pass. On 2026-11-07, crates.io rejected the first upload because
-the account has no verified email address. No crate was published. Verify the
-account email at https://crates.io/settings/profile, then retry publication.
-See docs/ai-log/X3-publish.md for the checks and upload result.
+Published and verified on crates.io on 2026-11-07:
+- https://crates.io/crates/igs-iec104-codec/0.1.0
+- https://crates.io/crates/igs-iec104-link/0.1.0
+- https://crates.io/crates/igs-iec104/0.1.0
+
+The account email verification initially blocked publication; the maintainer
+confirmed it was completed, and the retry succeeded. All three versions are
+available and are not yanked. See docs/ai-log/X3-publish.md for the checks and receipt.
 
 ## Remaining 1.0 gates
 
