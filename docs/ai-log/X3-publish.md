@@ -41,6 +41,23 @@ Additional release checks passed:
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features`
 - `cargo publish --dry-run --allow-dirty --all-features -p igs-iec104-codec -p igs-iec104-link -p igs-iec104`
 
-The preparation is committed before upload so each package records a clean source
-commit. The publication receipt will be added after crates.io confirms all versions.
+The preparation was committed before the upload attempt so each package records a clean
+source commit (3cf5b24).
 The initial development publication is tracked separately from the pending X3 gate.
+
+
+## Publication blocked
+
+Cargo packaged and verified all three crates, then crates.io rejected the first
+upload (igs-iec104-codec) with HTTP 400: the account needs a verified email address.
+The link and async crates were not uploaded. All three crate endpoints still
+returned HTTP 404 after the attempt. No version has been published.
+
+The maintainer must verify the account email at
+https://crates.io/settings/profile before the publication can be retried.
+The root README continues to state that 0.1.0 is not published.
+X3-publish remains unticked, as do the original 1.0 release gates.
+
+The token was provided through CARGO_REGISTRY_TOKEN in the child environment.
+It was not printed, committed, or saved to Cargo credentials.
+No push or tag was made.

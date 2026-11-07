@@ -15,6 +15,13 @@ approve or complete the 1.0 release gates.
 - Verify that crates.io serves each uploaded version.
 - Commit the preparation and publication record locally. Do not push or tag.
 
+## Current publication status
+
+Preparation checks pass. On 2026-11-07, crates.io rejected the first upload because
+the account has no verified email address. No crate was published. Verify the
+account email at https://crates.io/settings/profile, then retry publication.
+See docs/ai-log/X3-publish.md for the checks and upload result.
+
 ## Remaining 1.0 gates
 
 The following remain pending and are not certified by the 0.1.0 publication:
