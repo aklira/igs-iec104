@@ -35,3 +35,11 @@ No external settings, pushes, tags or registry uploads are part of this change.
 
 Sources: https://crates.io/docs/trusted-publishing and
 https://github.com/rust-lang/crates-io-auth-action.
+
+## Follow-up: integrate the workflow into main
+
+The maintainer reported that git push origin main returned Everything up-to-date.
+The validated workflow commit f4b5d41 was on codex/cratesio-publishing; main
+still pointed to e198adf, identical to origin/main. With the worktree clean,
+main was fast-forwarded to the workflow branch. No workflow or source changed,
+so the completed validation remains applicable. No push or tag was made.
