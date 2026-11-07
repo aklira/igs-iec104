@@ -381,6 +381,13 @@ Each task lists: **Depends**, **Read**, **Produce**, **Done when**.
 - Done when: the standard gate and publish dry-run pass, and crates.io serves all three
   0.1.0 packages. This does not complete X3 or waive the 1.0 release gates.
 
+**X3-sync — Reconcile the published release branch**
+- Depends: X3-publish.
+- Read: local and origin/main commit histories, Cargo.lock and crate manifests.
+- Produce: merge origin/main into the publication branch while preserving publication commit IDs;
+  retain Tokio 1.54.1 from the remote lockfile and record the reconciliation.
+- Done when: the standard gate passes, origin/main is an ancestor of main and the worktree is clean.
+
 **X3 — Release readiness** ⛔
 - Depends: all previous tasks.
 - Produce: release checklist in `docs/RELEASE.md`; coverage ≥ 85 % codec and ≥ 75 % link/server
@@ -481,6 +488,7 @@ API: a maintainer reviews the API of U1 to U3 before it is implemented.
 | X2 Documentation and examples | [x] |
 | X4 Usage examples | [x] |
 | X3-publish Initial development publication | [x] |
+| X3-sync Reconcile the published release branch | [x] |
 | X3 Release readiness ⛔ | [ ] |
 | U1 Graceful server shutdown ⛔ | [x] |
 | U2 Server connection and transfer events ⛔ | [x] |
