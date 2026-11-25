@@ -1028,11 +1028,24 @@ fn crl_der(pem: &[u8]) -> Vec<u8> {
 /// A ClientHello in a record, written by hand: the record version, the legacy version, and the
 /// extensions as they are on the wire (with their length), or none.
 fn crafted_client_hello(record_version: u16, legacy_version: u16, extensions: &[u8]) -> Vec<u8> {
+    // One cipher suite of the profile: TLS_RSA_WITH_AES_128_CBC_SHA256 (table 9).
+    crafted_client_hello_with_suites(record_version, legacy_version, &[0x003C], extensions)
+}
+
+/// A hand-made ClientHello that offers the given cipher suites, with the given extensions.
+fn crafted_client_hello_with_suites(
+    record_version: u16,
+    legacy_version: u16,
+    suites: &[u16],
+    extensions: &[u8],
+) -> Vec<u8> {
     let mut body = legacy_version.to_be_bytes().to_vec();
     body.extend([0u8; 32]);
     body.push(0);
-    // One cipher suite of the profile: TLS_RSA_WITH_AES_128_CBC_SHA256 (table 9).
-    body.extend([0, 2, 0x00, 0x3C]);
+    body.extend(((suites.len() * 2) as u16).to_be_bytes());
+    for suite in suites {
+        body.extend(suite.to_be_bytes());
+    }
     body.extend([1, 0]);
     body.extend(extensions);
     let mut message = vec![1u8];
@@ -1093,6 +1106,29 @@ async fn a_client_that_proposes_ssl_3_is_refused_with_the_alarm() {
     .await;
     let _socket = send_hello(station, &crafted_client_hello(0x0301, 0x0300, &[])).await;
     assert!(raised(&events, SecurityEvent::DisallowedVersion).await);
+}
+
+#[tokio::test]
+async fn a_client_offering_only_a_disallowed_suite_raises_the_warning() {
+    // Clause 7.3: a proposal of cipher suites that the profile disallows raises the warning. The
+    // station hears the hello, and the hello offers TLS_RSA_WITH_DES_CBC_SHA only.
+    const TLS_RSA_WITH_DES_CBC_SHA: u16 = 0x0009;
+    let events = Arc::new(Recorder::default());
+    let station = start_station_on(station_backend(
+        &events,
+        SERVER_CERTIFICATE,
+        SERVER_KEY,
+        roots(false),
+        Vec::new(),
+        false,
+    ))
+    .await;
+    let _socket = send_hello(
+        station,
+        &crafted_client_hello_with_suites(0x0303, 0x0303, &[TLS_RSA_WITH_DES_CBC_SHA], &[]),
+    )
+    .await;
+    assert!(raised(&events, SecurityEvent::DisallowedCipherSuite).await);
 }
 
 #[tokio::test]

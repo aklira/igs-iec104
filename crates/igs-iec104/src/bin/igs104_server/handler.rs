@@ -54,7 +54,7 @@ impl Handler for Demo {
 mod tests {
     use igs_iec104::server::CommandValue;
     use igs_iec104_codec::elements::{Qoc, Sco};
-    use igs_iec104_codec::header::InformationObjectAddress;
+    use igs_iec104_codec::header::{CommonAddress, InformationObjectAddress};
 
     use super::super::points::{Kind, Simulation};
     use super::*;
@@ -72,6 +72,7 @@ mod tests {
 
     fn operation(address: u32) -> Operation {
         Operation {
+            common_address: CommonAddress::new(1),
             address: InformationObjectAddress::new(address).expect("in range"),
             value: CommandValue::Single(Sco {
                 on: true,

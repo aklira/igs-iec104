@@ -340,3 +340,177 @@ async fn a_station_that_never_answers_the_handshake_is_given_up_after_t0() {
         "the handshake times out: {event:?}"
     );
 }
+
+/// An OpenSSL client that presents the client identity and the test roots, and that the test configures:
+/// the suites, the groups or the versions it offers. Returns whether the handshake with the station failed.
+#[cfg(feature = "openssl")]
+async fn openssl_handshake_fails(
+    station: SocketAddr,
+    configure: impl FnOnce(&mut openssl::ssl::SslConnectorBuilder),
+) -> bool {
+    use openssl::pkey::PKey;
+    use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+    use openssl::x509::store::X509StoreBuilder;
+    use openssl::x509::X509;
+
+    let mut builder = SslConnector::builder(SslMethod::tls_client()).expect("a client");
+    let mut store = X509StoreBuilder::new().expect("a store");
+    for root in X509::stack_from_pem(ROOTS).expect("the roots") {
+        store.add_cert(root).expect("a root");
+    }
+    builder
+        .set_verify_cert_store(store.build())
+        .expect("the roots");
+    builder.set_verify(SslVerifyMode::PEER);
+    builder
+        .set_certificate(&X509::from_pem(CLIENT_CERTIFICATE).expect("the certificate"))
+        .expect("the certificate");
+    builder
+        .set_private_key(&PKey::private_key_from_pem(CLIENT_KEY).expect("the key"))
+        .expect("the key");
+    configure(&mut builder);
+    let ssl = builder
+        .build()
+        .configure()
+        .expect("the configuration")
+        .into_ssl("localhost")
+        .expect("the session");
+    let tcp = TcpStream::connect(station)
+        .await
+        .expect("the TCP connection");
+    let mut stream = tokio_openssl::SslStream::new(ssl, tcp).expect("the stream");
+    std::pin::Pin::new(&mut stream).connect().await.is_err()
+}
+
+/// The rustls backend cannot offer these items of the profile (decision Q-025, CHANGELOG.md). A client
+/// that offers only one of them is refused: the station finds no suite, group or scheme in common.
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn the_rustls_station_refuses_a_client_that_offers_only_the_cbc_suite_of_tls_12() {
+    // TLS_RSA_WITH_AES_128_CBC_SHA256 (table 9, mandatory).
+    let events = Arc::new(Recorder::default());
+    let station = start_station(&events).await;
+    let refused = openssl_handshake_fails(station, |builder| {
+        builder
+            .set_max_proto_version(Some(openssl::ssl::SslVersion::TLS1_2))
+            .expect("TLS 1.2");
+        builder.set_cipher_list("AES128-SHA256").expect("the suite");
+    })
+    .await;
+    assert!(
+        refused,
+        "the station negotiates a CBC suite it does not implement"
+    );
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn the_rustls_station_refuses_a_client_that_offers_only_the_dhe_suite_of_tls_12() {
+    // TLS_DHE_RSA_WITH_AES_128_GCM_SHA256 (table 9, mandatory): rustls has no finite-field DHE.
+    let events = Arc::new(Recorder::default());
+    let station = start_station(&events).await;
+    let refused = openssl_handshake_fails(station, |builder| {
+        builder
+            .set_max_proto_version(Some(openssl::ssl::SslVersion::TLS1_2))
+            .expect("TLS 1.2");
+        builder
+            .set_cipher_list("DHE-RSA-AES128-GCM-SHA256")
+            .expect("the suite");
+    })
+    .await;
+    assert!(
+        refused,
+        "the station negotiates a DHE suite it does not implement"
+    );
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn the_rustls_station_refuses_a_client_that_offers_only_the_ccm_suite_of_tls_13() {
+    // TLS_AES_128_CCM_SHA256 (table 13, mandatory).
+    let events = Arc::new(Recorder::default());
+    let station = start_station(&events).await;
+    let refused = openssl_handshake_fails(station, |builder| {
+        builder
+            .set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_3))
+            .expect("TLS 1.3");
+        builder
+            .set_ciphersuites("TLS_AES_128_CCM_SHA256")
+            .expect("the suite");
+    })
+    .await;
+    assert!(
+        refused,
+        "the station negotiates a CCM suite it does not implement"
+    );
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn the_rustls_station_refuses_a_client_that_offers_only_the_ffdhe2048_group() {
+    // The group ffdhe2048 of TLS 1.3 (table 16, mandatory).
+    let events = Arc::new(Recorder::default());
+    let station = start_station(&events).await;
+    let refused = openssl_handshake_fails(station, |builder| {
+        builder
+            .set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_3))
+            .expect("TLS 1.3");
+        builder.set_groups_list("ffdhe2048").expect("the group");
+    })
+    .await;
+    assert!(
+        refused,
+        "the station negotiates a group it does not implement"
+    );
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn the_rustls_station_accepts_the_same_client_with_a_suite_of_the_profile() {
+    // The control of the refusals above: the same client, offering a suite that rustls implements, is
+    // accepted, so the refusals come from the suites and not from the client's identity or the roots.
+    let events = Arc::new(Recorder::default());
+    let station = start_station(&events).await;
+    let refused = openssl_handshake_fails(station, |builder| {
+        builder
+            .set_max_proto_version(Some(openssl::ssl::SslVersion::TLS1_2))
+            .expect("TLS 1.2");
+        builder
+            .set_cipher_list("ECDHE-ECDSA-AES128-GCM-SHA256")
+            .expect("the suite");
+    })
+    .await;
+    assert!(!refused, "the station refuses a suite of the profile");
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn the_rustls_station_refuses_a_client_that_offers_only_the_pss_pss_scheme() {
+    // rsa_pss_pss_sha256 (tables 17 and 18, mandatory): rustls has only the rsae variant. The station's
+    // own certificate is an ECDSA one, which no scheme of this client's list can sign.
+    let events = Arc::new(Recorder::default());
+    let station = start_station(&events).await;
+    let refused = openssl_handshake_fails(station, |builder| {
+        builder
+            .set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_3))
+            .expect("TLS 1.3");
+        builder
+            .set_sigalgs_list("rsa_pss_pss_sha256")
+            .expect("the scheme");
+    })
+    .await;
+    assert!(
+        refused,
+        "the station signs with a scheme it does not implement"
+    );
+    let accepted = openssl_handshake_fails(station, |builder| {
+        builder
+            .set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_3))
+            .expect("TLS 1.3");
+    })
+    .await;
+    assert!(
+        !accepted,
+        "the same client, with its default schemes, is refused"
+    );
+}

@@ -812,7 +812,7 @@ fn set_point_commands_are_selected_and_executed_with_their_qualifier() {
         ]
     );
     // The command value of the body is read back through the operation.
-    let operation = super::operation_of(&select.body).expect("a command");
+    let operation = super::operation_of(&select.body, ca(STATION)).expect("a command");
     assert_eq!(operation.value, CommandValue::Normalized(value, qualifier));
     assert!(operation.value.select());
 }

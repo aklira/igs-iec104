@@ -260,6 +260,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "igs-iec104-campaign"
+version = "0.1.0"
+dependencies = [
+ "igs-iec104",
+ "igs-iec104-codec",
+ "igs-iec104-link",
+ "tokio",
+]
+
+[[package]]
 name = "igs-iec104-codec"
 version = "0.1.0"
 dependencies = [

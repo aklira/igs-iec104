@@ -3,6 +3,52 @@
 All notable changes to this project are recorded in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- One listener serves several controlled stations, each with its own common address and its own points:
+  `ServerConfig::with_station` adds a station to the listener, and `ServerHandle::station` gives the handle of its
+  points. The stations share one redundancy group: one started connection carries the events of all of them, and
+  each one announces its end of initialization. An address that the listener does not serve is mirrored with cause 46,
+  and the global address is answered for the first station, as before (issue #2).
+- The 36 security events of Annex A have a status in `docs/capabilities.md`: 26 are raised by the OpenSSL backend and
+  tested, and 10 are excluded, each with its reason. The event of a disallowed cipher suite (TLS_DISALLOWED_CIPHER) is
+  raised by the OpenSSL backend, and a test raises it through the handshake (issue #5).
+- Tests show the refusal, by the rustls station, of the items of the profile that rustls does not implement: a client
+  that offers only one of them is refused (issue #4, `docs/capabilities.md`).
+- The loopback campaigns of issue #3: the general interrogation of 10 000 points under spontaneous traffic, and the
+  switchover under load of two stations with the connection cut during the load. They are the program
+  `bench/campaign` (`bench/campaign/run.sh`), and their reports are in `docs/campaigns/`. The interop campaign against
+  the reference peers is not run: it needs Docker and Java (issue #3).
+
+### Fixed
+
+- A station that loses its connection keeps the ASDUs still queued for the transport, and sends them on the connection
+  that takes over, as it does for the unacknowledged ones. They used to be dropped with the channel, so a change could
+  be lost at a switchover (issue #3, `docs/campaigns/README.md`).
+- The transport refuses the ASDUs queued behind an ASDU refused for a full window, and hands them back in order. An
+  acknowledgement could open the window before they were taken, and they overtook the refused ASDU, which the station
+  sends again later: an answer to an interrogation could then arrive after its termination (issue #3).
+
+### Changed
+
+- Breaking for code that builds these structs or matches these enums without `..`: `Operation` has the new field
+  `common_address`, the station of the command (`Handler::select` and `Handler::execute` receive it); `ServerConfig` has
+  the new field `additional_stations`, set by `with_station`; `ServerError` has the new variant `Station`, which an
+  exhaustive match must handle. The single-station API is otherwise unchanged.
+
+### Known gaps
+
+- The rustls backend is not conformant with IEC 62351-3 (issue #4, decision of the maintainer): it lacks the mandatory
+  CBC and DHE suites of TLS 1.2, the CCM suite, the ffdhe2048 group, the rsa_pss_pss_sha256 scheme, the TLS 1.2
+  renegotiation and the TLS 1.3 key update. The README says that OpenSSL is the only backend for a profile claim, and
+  `docs/capabilities.md` gives each item and its refusal test.
+- The interop campaign of issue #3 is not run: it needs the reference peers, which run in Docker, and a Java runtime.
+  The load and switchover campaigns run on loopback (`docs/campaigns/`).
+- Ten of the 36 security events of Annex A are not raised by the OpenSSL backend, because the feature that triggers
+  them is not implemented or not offered. The table of `docs/capabilities.md` gives each one and its reason.
+
 ## [0.1.0] - 2026-11-07
 
 ### Added

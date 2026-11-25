@@ -107,6 +107,10 @@ impl CommandValue {
 /// its time tag when the command is time-tagged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Operation {
+    /// The common address of the station the command is for: the address of the ASDU, or the
+    /// station that answers the global address. A station that serves several common addresses
+    /// (see [`Responder::with_stations`]) tells them apart with it.
+    pub common_address: CommonAddress,
     /// The information object address of the command.
     pub address: InformationObjectAddress,
     /// The value and the qualifier of the command.
@@ -118,13 +122,15 @@ pub struct Operation {
 /// The answers of one controlled station, for one connection.
 #[derive(Debug)]
 pub struct Responder {
-    station: CommonAddress,
+    /// The common addresses the station serves. The first one answers the global address.
+    stations: Vec<CommonAddress>,
     selection_timeout: Duration,
     selections: Vec<Selection>,
 }
 
 #[derive(Debug)]
 struct Selection {
+    station: CommonAddress,
     type_id: TypeId,
     address: InformationObjectAddress,
     expires: Instant,
@@ -133,11 +139,38 @@ struct Selection {
 impl Responder {
     /// The answers of `station`. A selection expires `selection_timeout` after it is accepted.
     pub fn new(station: CommonAddress, selection_timeout: Duration) -> Self {
+        Self::with_stations(station, &[], selection_timeout)
+    }
+
+    /// The answers of the stations `station` and `additional`, which share one connection: an ASDU is
+    /// answered for the common address it carries, when it is one of them. The global address is
+    /// answered for `station`, as with [`Responder::new`]. A selection expires `selection_timeout`
+    /// after it is accepted.
+    pub fn with_stations(
+        station: CommonAddress,
+        additional: &[CommonAddress],
+        selection_timeout: Duration,
+    ) -> Self {
+        let mut stations = vec![station];
+        stations.extend(
+            additional
+                .iter()
+                .copied()
+                .filter(|common| *common != station),
+        );
         Self {
-            station,
+            stations,
             selection_timeout,
             selections: Vec::new(),
         }
+    }
+
+    /// The station that answers the global address: the first one given.
+    fn primary(&self) -> CommonAddress {
+        self.stations
+            .first()
+            .copied()
+            .unwrap_or(CommonAddress::GLOBAL)
     }
 
     /// The ASDUs to send in reply to `asdu`, which the controlling station sent at `now`.
@@ -154,29 +187,40 @@ impl Responder {
         if let Err(error) = validate_profile(asdu, Direction::Control) {
             return mirror(asdu, profile_cause(error)).into_iter().collect();
         }
-        if asdu.common_address != self.station && asdu.common_address != CommonAddress::GLOBAL {
+        if let Err(error) = validate_profile(asdu, Direction::Control) {
+            return mirror(asdu, profile_cause(error)).into_iter().collect();
+        }
+        if asdu.common_address != CommonAddress::GLOBAL
+            && !self.stations.contains(&asdu.common_address)
+        {
             return mirror(asdu, cause::UNKNOWN_COMMON_ADDRESS)
                 .into_iter()
                 .collect();
         }
+        // The global address is answered for the first station; any other address for itself.
+        let station = if asdu.common_address == CommonAddress::GLOBAL {
+            self.primary()
+        } else {
+            asdu.common_address
+        };
         if asdu.cot.cause() == cause::DEACTIVATION {
             // Deactivation is not supported: the station refuses it (9, negative).
-            return answer(self.station, asdu, cause::DEACTIVATION_CONFIRMATION, true)
+            return answer(station, asdu, cause::DEACTIVATION_CONFIRMATION, true)
                 .into_iter()
                 .collect();
         }
         match &asdu.body {
-            Body::C_IC_NA_1(objects) => self.interrogation(asdu, objects, image),
-            Body::C_CI_NA_1(objects) => self.counters(asdu, objects, image),
-            Body::C_RD_NA_1(objects) => self.read(asdu, objects, image),
-            Body::C_CS_NA_1(objects) => self.clock_sync(handler, asdu, objects, clock),
-            Body::C_RP_NA_1(objects) => self.reset(handler, asdu, objects),
-            Body::C_TS_TA_1(_) => answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
+            Body::C_IC_NA_1(objects) => self.interrogation(station, asdu, objects, image),
+            Body::C_CI_NA_1(objects) => self.counters(station, asdu, objects, image),
+            Body::C_RD_NA_1(objects) => self.read(station, asdu, objects, image),
+            Body::C_CS_NA_1(objects) => self.clock_sync(handler, station, asdu, objects, clock),
+            Body::C_RP_NA_1(objects) => self.reset(handler, station, asdu, objects),
+            Body::C_TS_TA_1(_) => answer(station, asdu, cause::ACTIVATION_CONFIRMATION, false)
                 .into_iter()
                 .collect(),
-            body => match operation_of(body) {
+            body => match operation_of(body, station) {
                 Some(operation) => self.operate(handler, asdu, &operation, now),
-                None => answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, true)
+                None => answer(station, asdu, cause::ACTIVATION_CONFIRMATION, true)
                     .into_iter()
                     .collect(),
             },
@@ -187,12 +231,13 @@ impl Responder {
     /// (or of the group) with the interrogation's cause, then the termination.
     fn interrogation(
         &self,
+        station: CommonAddress,
         asdu: &Asdu,
         objects: &Objects<Qoi>,
         image: &ProcessImage,
     ) -> Vec<Asdu> {
         let Some((_, qoi)) = single_object(objects) else {
-            return refuse_activation(self.station, asdu);
+            return refuse_activation(station, asdu);
         };
         let (interrogated, group) = if *qoi == Qoi::STATION {
             (cause::INTERROGATED_STATION, None)
@@ -200,27 +245,22 @@ impl Responder {
             match (1..=16u8).find(|number| Qoi::group(*number) == Some(*qoi)) {
                 Some(number) => match group_cause(cause::INTERROGATED_GROUP_1, number) {
                     Some(code) => (code, Some(number)),
-                    None => return refuse_activation(self.station, asdu),
+                    None => return refuse_activation(station, asdu),
                 },
-                None => return refuse_activation(self.station, asdu),
+                None => return refuse_activation(station, asdu),
             }
         };
         let points: Vec<(InformationObjectAddress, PointValue)> = match group {
-            None => image.points(self.station).collect(),
-            Some(number) => image.points_in_group(self.station, number).collect(),
+            None => image.points(station).collect(),
+            Some(number) => image.points_in_group(station, number).collect(),
         };
-        let mut out: Vec<Asdu> = answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
+        let mut out: Vec<Asdu> = answer(station, asdu, cause::ACTIVATION_CONFIRMATION, false)
             .into_iter()
             .collect();
         for (address, value) in points {
-            out.extend(self.point_answer(value, address, interrogated));
+            out.extend(self.point_answer(station, value, address, interrogated));
         }
-        out.extend(answer(
-            self.station,
-            asdu,
-            cause::ACTIVATION_TERMINATION,
-            false,
-        ));
+        out.extend(answer(station, asdu, cause::ACTIVATION_TERMINATION, false));
         out
     }
 
@@ -228,55 +268,57 @@ impl Responder {
     /// station answers the read only; freezing and resetting are refused.
     fn counters(
         &self,
+        station: CommonAddress,
         asdu: &Asdu,
         objects: &Objects<igs_iec104_codec::elements::Qcc>,
         image: &ProcessImage,
     ) -> Vec<Asdu> {
         let Some((_, qcc)) = single_object(objects) else {
-            return refuse_activation(self.station, asdu);
+            return refuse_activation(station, asdu);
         };
         if qcc.freeze() != CounterFreeze::Read {
-            return refuse_activation(self.station, asdu);
+            return refuse_activation(station, asdu);
         }
         let (interrogated, group) = match qcc.request() {
             5 => (cause::COUNTER_GENERAL, None),
             number @ 1..=4 => match group_cause(cause::COUNTER_GROUP_1, number) {
                 Some(code) => (code, Some(number)),
-                None => return refuse_activation(self.station, asdu),
+                None => return refuse_activation(station, asdu),
             },
-            _ => return refuse_activation(self.station, asdu),
+            _ => return refuse_activation(station, asdu),
         };
         let points: Vec<(InformationObjectAddress, PointValue)> = match group {
-            None => image.points(self.station).collect(),
-            Some(number) => image.points_in_group(self.station, number).collect(),
+            None => image.points(station).collect(),
+            Some(number) => image.points_in_group(station, number).collect(),
         };
-        let mut out: Vec<Asdu> = answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
+        let mut out: Vec<Asdu> = answer(station, asdu, cause::ACTIVATION_CONFIRMATION, false)
             .into_iter()
             .collect();
         for (address, value) in points {
             // Only the counters: the profile allows the counter causes for no other type.
             if let PointValue::Counter(_) = value {
-                out.extend(self.point_answer(value, address, interrogated));
+                out.extend(self.point_answer(station, value, address, interrogated));
             }
         }
-        out.extend(answer(
-            self.station,
-            asdu,
-            cause::ACTIVATION_TERMINATION,
-            false,
-        ));
+        out.extend(answer(station, asdu, cause::ACTIVATION_TERMINATION, false));
         out
     }
 
     /// Read (§7.2): the current value of the point, with the cause of a request (5). A mirror
     /// with cause 47 when the station has no point at the address, and with cause 45 when the
     /// point's type does not allow a request.
-    fn read(&self, asdu: &Asdu, objects: &Objects<()>, image: &ProcessImage) -> Vec<Asdu> {
+    fn read(
+        &self,
+        station: CommonAddress,
+        asdu: &Asdu,
+        objects: &Objects<()>,
+        image: &ProcessImage,
+    ) -> Vec<Asdu> {
         let Some((address, _)) = single_object(objects) else {
-            return refuse_activation(self.station, asdu);
+            return refuse_activation(station, asdu);
         };
-        match image.value(self.station, address) {
-            Some(value) => match self.point_answer(value, address, cause::REQUEST) {
+        match image.value(station, address) {
+            Some(value) => match self.point_answer(station, value, address, cause::REQUEST) {
                 Some(answer) => vec![answer],
                 None => mirror(asdu, cause::UNKNOWN_CAUSE).into_iter().collect(),
             },
@@ -286,17 +328,18 @@ impl Responder {
         }
     }
 
-    /// The ASDU that carries `value` at `address` with `cause_code`, when the 104 profile
-    /// allows that cause for the type of the value. `None` otherwise: the point is not part
-    /// of that answer. A time-tagged type is never in an interrogation, and a counter is
-    /// only in a counter interrogation.
+    /// The ASDU that carries `value` at `address` with `cause_code`, from `station`, when the
+    /// 104 profile allows that cause for the type of the value. `None` otherwise: the point is
+    /// not part of that answer. A time-tagged type is never in an interrogation, and a counter
+    /// is only in a counter interrogation.
     fn point_answer(
         &self,
+        station: CommonAddress,
         value: PointValue,
         address: InformationObjectAddress,
         cause_code: u8,
     ) -> Option<Asdu> {
-        let asdu = asdu_with(self.station, cause_code, false, value.body(address, None)?)?;
+        let asdu = asdu_with(station, cause_code, false, value.body(address, None)?)?;
         validate_profile(&asdu, Direction::Monitor)
             .is_ok()
             .then_some(asdu)
@@ -307,12 +350,13 @@ impl Responder {
     fn clock_sync<H: Handler + ?Sized>(
         &self,
         handler: &H,
+        station: CommonAddress,
         asdu: &Asdu,
         objects: &Objects<Cp56Time2a>,
         clock: Cp56Time2a,
     ) -> Vec<Asdu> {
         let Some((address, time)) = single_object(objects) else {
-            return refuse_activation(self.station, asdu);
+            return refuse_activation(station, asdu);
         };
         match handler.clock_sync(*time) {
             Ok(()) => {
@@ -320,11 +364,11 @@ impl Responder {
                     address,
                     value: clock,
                 }]));
-                asdu_with(self.station, cause::ACTIVATION_CONFIRMATION, false, body)
+                asdu_with(station, cause::ACTIVATION_CONFIRMATION, false, body)
                     .into_iter()
                     .collect()
             }
-            Err(_) => refuse_activation(self.station, asdu),
+            Err(_) => refuse_activation(station, asdu),
         }
     }
 
@@ -333,21 +377,23 @@ impl Responder {
     fn reset<H: Handler + ?Sized>(
         &self,
         handler: &H,
+        station: CommonAddress,
         asdu: &Asdu,
         objects: &Objects<Qrp>,
     ) -> Vec<Asdu> {
         let Some((_, qualifier)) = single_object(objects) else {
-            return refuse_activation(self.station, asdu);
+            return refuse_activation(station, asdu);
         };
         match handler.reset_process(*qualifier) {
-            Ok(()) => answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
+            Ok(()) => answer(station, asdu, cause::ACTIVATION_CONFIRMATION, false)
                 .into_iter()
                 .collect(),
-            Err(_) => refuse_activation(self.station, asdu),
+            Err(_) => refuse_activation(station, asdu),
         }
     }
 
-    /// A command (§7.7), with select-before-operate.
+    /// A command (§7.7), with select-before-operate. A selection is kept for its station, its type
+    /// identification and its address.
     fn operate<H: Handler + ?Sized>(
         &mut self,
         handler: &H,
@@ -356,8 +402,12 @@ impl Responder {
         now: Instant,
     ) -> Vec<Asdu> {
         self.selections.retain(|selection| selection.expires > now);
+        let station = operation.common_address;
         let type_id = asdu.type_id();
-        let refused = || answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, true);
+        let refused = || answer(station, asdu, cause::ACTIVATION_CONFIRMATION, true);
+        let same_command = |s: &Selection| {
+            s.station == station && s.type_id == type_id && s.address == operation.address
+        };
         if operation.value.select() {
             if self.selections.len() >= MAX_SELECTIONS {
                 return refused().into_iter().collect();
@@ -371,24 +421,20 @@ impl Responder {
                     let Some(expires) = now.checked_add(self.selection_timeout) else {
                         return refused().into_iter().collect();
                     };
-                    self.selections
-                        .retain(|s| !(s.type_id == type_id && s.address == operation.address));
+                    self.selections.retain(|s| !same_command(s));
                     self.selections.push(Selection {
+                        station,
                         type_id,
                         address: operation.address,
                         expires,
                     });
-                    answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
+                    answer(station, asdu, cause::ACTIVATION_CONFIRMATION, false)
                         .into_iter()
                         .collect()
                 }
             }
         } else {
-            let Some(index) = self
-                .selections
-                .iter()
-                .position(|s| s.type_id == type_id && s.address == operation.address)
-            else {
+            let Some(index) = self.selections.iter().position(same_command) else {
                 return refused().into_iter().collect();
             };
             self.selections.remove(index);
@@ -399,15 +445,10 @@ impl Responder {
                 Err(Refusal::Rejected) => refused().into_iter().collect(),
                 Ok(()) => {
                     let mut out: Vec<Asdu> =
-                        answer(self.station, asdu, cause::ACTIVATION_CONFIRMATION, false)
+                        answer(station, asdu, cause::ACTIVATION_CONFIRMATION, false)
                             .into_iter()
                             .collect();
-                    out.extend(answer(
-                        self.station,
-                        asdu,
-                        cause::ACTIVATION_TERMINATION,
-                        false,
-                    ));
+                    out.extend(answer(station, asdu, cause::ACTIVATION_TERMINATION, false));
                     out
                 }
             }
@@ -428,36 +469,46 @@ fn single_object<T>(objects: &Objects<T>) -> Option<(InformationObjectAddress, &
 }
 
 /// The command of a command ASDU; `None` for any other ASDU.
-fn operation_of(body: &Body) -> Option<Operation> {
+fn operation_of(body: &Body, common: CommonAddress) -> Option<Operation> {
     match body {
-        Body::C_SC_NA_1(objects) => plain(objects, CommandValue::Single),
-        Body::C_SC_TA_1(objects) => timed(objects, CommandValue::Single),
-        Body::C_DC_NA_1(objects) => plain(objects, CommandValue::Double),
-        Body::C_DC_TA_1(objects) => timed(objects, CommandValue::Double),
-        Body::C_RC_NA_1(objects) => plain(objects, CommandValue::Step),
-        Body::C_RC_TA_1(objects) => timed(objects, CommandValue::Step),
-        Body::C_SE_NA_1(objects) => plain(objects, |(v, q)| CommandValue::Normalized(v, q)),
-        Body::C_SE_TA_1(objects) => timed(objects, |(v, q)| CommandValue::Normalized(v, q)),
-        Body::C_SE_NB_1(objects) => plain(objects, |(v, q)| CommandValue::Scaled(v, q)),
-        Body::C_SE_TB_1(objects) => timed(objects, |(v, q)| CommandValue::Scaled(v, q)),
-        Body::C_SE_NC_1(objects) => plain(objects, |(v, q)| CommandValue::Float(v, q)),
-        Body::C_SE_TC_1(objects) => timed(objects, |(v, q)| CommandValue::Float(v, q)),
+        Body::C_SC_NA_1(objects) => plain(common, objects, CommandValue::Single),
+        Body::C_SC_TA_1(objects) => timed(common, objects, CommandValue::Single),
+        Body::C_DC_NA_1(objects) => plain(common, objects, CommandValue::Double),
+        Body::C_DC_TA_1(objects) => timed(common, objects, CommandValue::Double),
+        Body::C_RC_NA_1(objects) => plain(common, objects, CommandValue::Step),
+        Body::C_RC_TA_1(objects) => timed(common, objects, CommandValue::Step),
+        Body::C_SE_NA_1(objects) => plain(common, objects, |(v, q)| CommandValue::Normalized(v, q)),
+        Body::C_SE_TA_1(objects) => timed(common, objects, |(v, q)| CommandValue::Normalized(v, q)),
+        Body::C_SE_NB_1(objects) => plain(common, objects, |(v, q)| CommandValue::Scaled(v, q)),
+        Body::C_SE_TB_1(objects) => timed(common, objects, |(v, q)| CommandValue::Scaled(v, q)),
+        Body::C_SE_NC_1(objects) => plain(common, objects, |(v, q)| CommandValue::Float(v, q)),
+        Body::C_SE_TC_1(objects) => timed(common, objects, |(v, q)| CommandValue::Float(v, q)),
         _ => None,
     }
 }
 
-fn plain<T: Copy>(objects: &Objects<T>, value: fn(T) -> CommandValue) -> Option<Operation> {
+fn plain<T: Copy>(
+    common: CommonAddress,
+    objects: &Objects<T>,
+    value: fn(T) -> CommandValue,
+) -> Option<Operation> {
     let (address, item) = single_object(objects)?;
     Some(Operation {
+        common_address: common,
         address,
         value: value(*item),
         time: None,
     })
 }
 
-fn timed<T: Copy>(objects: &Objects<Timed<T>>, value: fn(T) -> CommandValue) -> Option<Operation> {
+fn timed<T: Copy>(
+    common: CommonAddress,
+    objects: &Objects<Timed<T>>,
+    value: fn(T) -> CommandValue,
+) -> Option<Operation> {
     let (address, item) = single_object(objects)?;
     Some(Operation {
+        common_address: common,
         address,
         value: value(item.value),
         time: Some(item.time),

@@ -84,7 +84,7 @@ application's `Handler`, which accepts or refuses them.
 | Execution without a kept selection (direct execution) | negative confirmation | `respond` `a_direct_execution_without_a_selection_is_refused`; `tests/server.rs` `a_direct_execution_without_a_selection_is_refused` |
 | Command refused by the handler | negative confirmation, or mirror with 47 for an unknown address | `respond` `a_refused_selection_is_a_negative_confirmation`, `a_command_to_an_unknown_address_is_mirrored_with_cause_47`; `tests/server.rs` `a_command_the_application_refuses_is_a_negative_confirmation` |
 | More than 16 selections kept on a connection | negative confirmation | `respond` `the_selections_of_a_connection_are_bounded` |
-| Another common address | mirror with 46; the global address 65535 is answered | `respond` `an_unknown_common_address_is_mirrored_with_cause_46`, `a_request_to_the_global_address_is_answered_by_the_station`; `tests/server.rs` `a_request_for_another_station_is_mirrored_with_cause_46` |
+| Another common address | mirror with 46 when the listener serves no station of that address; the global address 65535 is answered for the first station | `respond` `an_unknown_common_address_is_mirrored_with_cause_46`, `a_request_to_the_global_address_is_answered_by_the_station`; `tests/server.rs` `a_request_for_another_station_is_mirrored_with_cause_46` |
 | A type, direction, form or cause the profile does not allow | mirror with 44 (type, direction, SQ = 1 form, Q-015) or 45 (cause) | `respond` `a_profile_violation_is_mirrored_with_cause_44_or_45`; `tests/server.rs` `a_message_the_station_cannot_place_is_mirrored_with_cause_44` |
 | Deactivation (cause 8) | negative deactivation confirmation (9) | `respond` `a_deactivation_is_refused_with_a_negative_deactivation_confirmation` |
 
@@ -151,4 +151,89 @@ With `ServerConfig::with_events`, the station reports its connections on a strea
 | --- | --- |
 | Redundancy group of the station: one started connection, switchover, unacknowledged events sent again, answers of a closed connection not sent again (§10, D-021) | `src/server/tests.rs` (switchover tests, among them `the_answers_of_a_connection_are_not_sent_again_on_the_next_one`); `tests/server.rs` `a_second_started_connection_supersedes_the_first_and_takes_the_events` |
 | Redundant controlling station (`RedundantClient`) | `src/redundancy/tests.rs` |
+| ASDUs of a station kept in order across a full window and a switchover: the ASDUs queued behind one refused for a full window are refused too, in order; the commands queued when a connection ends go to the connection that takes over | `tests/transport.rs` `an_asdu_queued_behind_one_refused_for_a_full_window_is_not_sent_ahead_of_it`; `docs/campaigns/switchover.md` (the cut under load) |
+| Several stations on one listener (`ServerConfig::with_station`, `ServerHandle::station`): each answers the requests of its own common address from its own points, with cause 46 for another address; one redundancy group for all of them; each announces its end of initialization | `tests/server.rs` `two_stations_on_one_listener_answer_each_for_its_own_points`, `a_request_for_an_address_of_neither_station_is_mirrored_with_cause_46`, `the_global_address_is_answered_for_the_first_station`, `the_stations_of_one_listener_share_a_redundancy_group_and_each_announces_its_start`, `a_listener_refuses_an_additional_station_that_is_global_or_repeated` |
 | TLS (IEC 62351-3) with the OpenSSL backend: every mandatory item of the profile | `tests/tls_openssl.rs` `every_mandatory_item_of_the_profile_is_negotiated`; the gaps of the `rustls` backend are in `CHANGELOG.md` |
+
+## Campaigns (issue #3)
+
+The campaigns run the station and the controlling station of this library against each other. They are in
+`bench/campaign/`, and their reports are in `docs/campaigns/`, which says how to run them.
+
+| Campaign | Status | Report | Program and test |
+| --- | --- | --- | --- |
+| General interrogation of 10 000 points, under spontaneous traffic on the same connection: the percentiles of the interrogation and of the changes | run on loopback, PASS (every interrogation answered every point) | `docs/campaigns/load.md` | `bench/campaign` `load`; `bench/campaign/run.sh` |
+| Switchover under load: two stations in one redundancy group, the connection cut during the load; no change lost, in order, at most one resend | run on loopback, PASS | `docs/campaigns/switchover.md` | `bench/campaign` `switchover`; the regression test `tests/transport.rs` `an_asdu_queued_behind_one_refused_for_a_full_window_is_not_sent_ahead_of_it` |
+| Interop with two independent peers, controlling and controlled roles | not run: needs Docker, a Java runtime and `tshark` | `docs/campaigns/README.md` | `bench/tests/` (`test_t4_client_matrix.py`, `test_s5_interop_matrix.py`, `test_s5_load.py`, `test_s5_failover.py`) |
+
+## rustls backend: conformance (issue #4)
+
+The rustls backend is not conformant with IEC 62351-3: a profile claim must name the OpenSSL backend (README.md).
+The table gives each item of the profile that rustls does not provide, and the test that shows its refusal: a client
+that offers only that item is refused by the rustls station. The clients are OpenSSL clients, which offer what rustls
+cannot. The control test `the_rustls_station_accepts_the_same_client_with_a_suite_of_the_profile` shows that the same
+client is accepted with a suite of the profile. Tests are in `tests/tls.rs`.
+
+| Item of the profile | Table | Status in rustls | Test (refusal) |
+| --- | --- | --- | --- |
+| TLS_RSA_WITH_AES_128_CBC_SHA256 | 9, m | not offered | `the_rustls_station_refuses_a_client_that_offers_only_the_cbc_suite_of_tls_12` |
+| TLS_DHE_RSA_WITH_AES_128_GCM_SHA256 | 9, m | not offered (no finite-field DHE) | `the_rustls_station_refuses_a_client_that_offers_only_the_dhe_suite_of_tls_12` |
+| TLS_AES_128_CCM_SHA256 | 13, m | not offered | `the_rustls_station_refuses_a_client_that_offers_only_the_ccm_suite_of_tls_13` |
+| ffdhe2048 group | 16, m | not offered | `the_rustls_station_refuses_a_client_that_offers_only_the_ffdhe2048_group` |
+| rsa_pss_pss_sha256 scheme | 17, 18, m | not offered (rustls has the rsae variant) | `the_rustls_station_refuses_a_client_that_offers_only_the_pss_pss_scheme` |
+| TLS 1.2 renegotiation | 11, m | not implemented | no refusal test: the rustls station never starts one, and it has no renegotiation interval to test |
+| TLS 1.3 key update | 20, m | not implemented | no refusal test: the rustls station never sends a KeyUpdate, and it has no key update interval to test |
+| OCSP response validation | 8, o | stapled responses are accepted, not validated | none |
+| Trusted CA indication | 12, o | not implemented | none |
+
+The two items without a refusal test (renegotiation and key update) are mandatory items: they are documented
+exclusions, but no test shows their refusal. They are covered by the OpenSSL backend (`tests/tls_openssl.rs`).
+
+## Security events of Annex A (IEC 62351-3)
+
+Each of the 36 security events of Annex A has a status: raised by the OpenSSL backend, the default, and
+tested, or excluded with its reason. The rustls backend raises the events of its own handshake only; the
+gaps of that backend are in `CHANGELOG.md`. The identifiers are those of `src/tls/events.rs`, with their
+severity and clause.
+
+26 events are raised and tested; 10 are excluded. Each excluded event is listed below with its reason.
+`tests/tls_openssl.rs` is the integration test file; `src/...` names are unit tests.
+
+| Event | Severity | Clause | Status | Test or reason |
+| --- | --- | --- | --- | --- |
+| TLS_HS_SUCCESS | notice | 6.1 | raised | `tests/tls_openssl.rs` `the_station_answers_an_interrogation_over_tls_13_and_raises_the_notice` |
+| TLS_DEPRECATED_VERSION | alarm | 6.2 | raised | `tests/tls_openssl.rs` `a_client_that_proposes_only_tls_11_is_refused_with_the_alarm` |
+| TLS_WEAK_VERSION | warning | 6.2 | excluded | The station does not enable TLS 1.0 or 1.1 (table 7, conditional), so no weak version is negotiated; a proposal of TLS 1.0 or 1.1 raises TLS_DEPRECATED_VERSION. |
+| TLS_DISALLOWED_VERSION | alarm | 6.2 | raised | `tests/tls_openssl.rs` `a_client_that_proposes_ssl_3_is_refused_with_the_alarm` |
+| TLS_VERSION_CHANGE | alarm | 6.2 | excluded | A renegotiation that changes the protocol version is refused by OpenSSL before the application sees it, so the station never reaches the event. Not checked by a test (`docs/ai-log/X1.md`). |
+| TLS_NO_PEER_CERT | alarm | 6.4.3 | raised | `tests/tls_openssl.rs` `a_client_without_a_certificate_is_refused_and_the_station_raises_no_peer_certificate` |
+| TLS_NO_LOCAL_CERT | alarm | 6.4.3 | raised | `src/tls/settings.rs` `an_identity_without_a_key_is_refused_and_raises_the_event` (`Identity::new`, shared by both backends) |
+| TLS_SESSION_CLOSED-REV | alarm | 6.4.4.4 | raised | `tests/tls_openssl.rs` `a_revoked_client_certificate_is_refused_with_the_crl_and_both_events_are_raised` |
+| TLS_DISALLOWED_CIPHER | warning | 7.3 | raised | `tests/tls_openssl.rs` `a_client_offering_only_a_disallowed_suite_raises_the_warning`; `src/tls/client_hello.rs` `a_hello_offering_only_disallowed_suites_raises_the_event` |
+| TLS_SESSIONID_EXPIRED_FULL_HS | warning | 7.4.4 | excluded | A resumption attempt with an expired session ID: the OpenSSL message callback does not see it, so the station cannot raise it from the handshake. Not implemented. |
+| TLS_NO_RENEG | alarm | 7.4.5 | raised | `src/tls/openssl_backend/tests.rs` `a_peer_that_refuses_renegotiation_ends_the_session_with_the_alarm`, `a_peer_that_does_not_answer_a_renegotiation_ends_the_session_with_the_alarm` |
+| TLS_NO_RENEG_SIG | warning | 7.5.2 | excluded | A peer without secure renegotiation (RFC 5746). An OpenSSL client always sends the extension, and an OpenSSL station refuses the unsafe renegotiation, so no test peer reaches the event (`docs/ai-log/X1.md`). |
+| TLS_NO_RENEG_TICKET | alarm | 7.5.2 | excluded | The same peer, in a renegotiated handshake. Same reason as TLS_NO_RENEG_SIG. |
+| TLS_NO_TR_CA_MATCH_S | alarm | 7.5.3 | excluded | The trusted CA indication (clause 7.5.3) is not implemented. |
+| TLS_NO-SIG_ALGO_EXT | warning | 7.5.4 | raised | `tests/tls_openssl.rs` `a_client_without_signature_algorithms_raises_the_warning` |
+| TLS_DEP_SIG_ALGO | warning | 7.5.4 | raised | `tests/tls_openssl.rs` `a_client_that_signals_sha_1_with_rsa_raises_the_warning_and_is_accepted` |
+| TLS_NO_EPSK_MODE | alarm | 7.5.7 | raised | `tests/tls_openssl.rs` `a_cbc_suite_without_encrypt_then_mac_ends_the_session_with_the_alarm` (mnemonic as printed, Q-020) |
+| TLS_NO_ENCRYPT-THEN-MAC | warning | 8.3.2 | raised | `tests/tls_openssl.rs` `a_client_that_offers_only_psk_ke_raises_the_alarm_and_is_not_established` (mnemonic as printed, Q-020) |
+| TLS_NO_SK_UPDATE | alarm | 8.4 | raised | `src/tls/openssl_backend/tests.rs` `a_peer_that_does_not_answer_a_key_update_ends_the_session_with_the_alarm` |
+| TLS_NO_TR_CA_MATCH_SC | alarm | 8.8.8 | excluded | The trusted CA indication (clause 8.8.8) is not implemented. |
+| TLS_EARLY-DATA | warning | 8.8.11 | raised | `tests/tls_openssl.rs` `early_data_in_the_handshake_raises_the_warning` |
+| TLS_CERT_SIZE_MISMATCH | alarm | 6.4.2 | raised | `tests/tls_openssl.rs` `a_server_certificate_above_the_size_limit_is_refused_by_the_client` |
+| TLS_NO_CA_MATCH | alarm | 6.4.4.2 | raised | `tests/tls_openssl.rs` `a_client_certificate_from_an_unknown_ca_is_refused_and_the_station_raises_no_ca_match` |
+| TLS_NO_TRUSTED_CERT_MATCH | alarm | 6.4.4.3 | excluded | The lists of individual trusted certificates (clause 6.4.4.3, "should") are not implemented. |
+| TLS_CERT_REVOKED | alarm | 6.4.4.4 | raised | `tests/tls_openssl.rs` `a_revoked_client_certificate_is_refused_with_the_crl_and_both_events_are_raised` |
+| TLS_NO_CRL | warning | 6.4.4.4.2 | raised | `tests/tls_openssl.rs` `the_lack_of_a_crl_of_the_issuer_is_a_warning_and_the_client_is_accepted` |
+| TLS_CRL_EXP | warning | 6.4.4.4.2 | raised | `tests/tls_openssl.rs` `an_expired_crl_is_a_warning_and_the_client_is_accepted` |
+| TLS_OCSP_RES_EXP | warning | 6.4.4.4.3 | excluded | OCSP is optional (clause 6.4.4.4.3) and not implemented: no OCSP response is checked. |
+| TLS_OCSP_RESP_UNAVAIL | warning | 6.4.4.4.3 | excluded | OCSP is optional (clause 6.4.4.4.3) and not implemented: no responder is queried. |
+| TLS_CERT_EXP | alarm | 6.4.4.5 | raised | `tests/tls_openssl.rs` `an_expired_client_certificate_is_refused_and_the_station_raises_the_expiry` |
+| TLS_SIG_ALG_MISMATCH | alarm | 6.4.4.6 | raised | `tests/tls_openssl.rs` `a_peer_with_no_signature_algorithm_in_common_is_refused_with_the_alarm` |
+| TLS_SIG_V_FAILED | alarm | 6.4.4.6 | raised | `tests/tls_openssl.rs` `a_certificate_whose_signature_does_not_verify_is_refused_with_the_alarm` |
+| TLS_SHORT_RSA_KEY | alarm | 7.4.3 | raised | `tests/tls_openssl.rs` `an_rsa_key_of_1024_bits_is_refused_unless_the_policy_allows_it` |
+| TLS_MIN_KEY | warning | 7.4.3 | raised | `tests/tls_openssl.rs` `an_rsa_key_of_1024_bits_is_refused_unless_the_policy_allows_it` |
+| TLS_SHORT_KEY | alarm | 7.4.3 | raised | `tests/tls_openssl.rs` `an_rsa_key_below_1024_bits_is_refused_even_when_the_policy_allows_1024` |
+| TLS_DEP_HASH | warning | 7.4.3 | raised | `tests/tls_openssl.rs` `a_certificate_signed_with_sha_1_is_refused_with_the_warning` |
