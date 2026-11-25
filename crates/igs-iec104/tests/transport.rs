@@ -23,7 +23,7 @@ use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use tokio::time::{timeout, Instant};
 
 /// C_IC_NA_1, activation, station interrogation: the ASDU of the tests.
 const INTERROGATION: &[u8] = &[0x64, 0x01, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x14];
@@ -457,5 +457,120 @@ async fn only_a_controlling_session_reports_its_transmissions() {
             !matches!(delivery, Delivery::Transmitted(_)),
             "a controlled session reports no transmission"
         );
+    }
+}
+
+/// The ASDU of the round `index`: the interrogation with the qualifier 20 + index, so that each ASDU
+/// is told apart on the wire.
+fn numbered(index: u8) -> Asdu {
+    let mut bytes = INTERROGATION.to_vec();
+    if let Some(qualifier) = bytes.last_mut() {
+        *qualifier = 20u8.saturating_add(index);
+    }
+    Asdu::decode(&bytes).expect("sample decodes")
+}
+
+/// The qualifier and the send sequence number of an I frame of the `numbered` ASDUs.
+fn numbered_frame(frame: &[u8]) -> (u8, u16) {
+    let sequence = u16::from_le_bytes([frame[2], frame[3]]) >> 1;
+    (frame[15].saturating_sub(20), sequence)
+}
+
+/// The next I frame the peer receives, as the reader task passes it on.
+async fn next_frame(frames: &mut mpsc::Receiver<[u8; 16]>) -> [u8; 16] {
+    frames.recv().await.expect("the peer reads the frames")
+}
+
+/// A controlled station with a window of 12 I frames sends 14 ASDUs. The 13th and the 14th are queued
+/// when the window is full, and an acknowledgement opens it meanwhile. The 13th is refused, and it is
+/// sent again by the station after the window opens: the 14th must not overtake it (§10.5). The station
+/// takes the refusals from the deliveries in order, and sends them again in order.
+#[tokio::test]
+async fn an_asdu_queued_behind_one_refused_for_a_full_window_is_not_sent_ahead_of_it() {
+    const WINDOW: u8 = 12;
+    const ROUNDS: u8 = 200;
+    for round in 0..ROUNDS {
+        let (local, mut peer) = duplex(64 * 1024);
+        let (commands, commands_rx) = mpsc::channel(64);
+        let (deliveries_tx, mut deliveries) = mpsc::channel(64);
+        let task = tokio::spawn(run(local, controlled(), commands_rx, deliveries_tx));
+        peer.write_all(&STARTDT_ACT).await.expect("the peer writes");
+        assert_eq!(read_frame(&mut peer).await, STARTDT_CON, "round {round}");
+        let (mut peer_read, mut peer_write) = tokio::io::split(peer);
+        let (frames_tx, mut frames) = mpsc::channel::<[u8; 16]>(64);
+        tokio::spawn(async move {
+            let mut frame = [0u8; 16];
+            while peer_read.read_exact(&mut frame).await.is_ok() {
+                if frames_tx.send(frame).await.is_err() {
+                    break;
+                }
+            }
+        });
+        assert_eq!(
+            deliveries.recv().await,
+            Some(Delivery::Transfer(TransferState::Started))
+        );
+
+        // The window of 12 is sent, and the peer reads it.
+        let mut sent: Vec<(u8, u16)> = Vec::new();
+        for index in 0..WINDOW {
+            commands
+                .send(Command::SendAsdu(numbered(index)))
+                .await
+                .expect("the driver runs");
+        }
+        for _ in 0..WINDOW {
+            sent.push(numbered_frame(&next_frame(&mut frames).await));
+        }
+        // The 13th and the 14th are queued behind the full window, and the acknowledgement of the
+        // window follows at once.
+        for index in WINDOW..WINDOW.saturating_add(2) {
+            commands
+                .send(Command::SendAsdu(numbered(index)))
+                .await
+                .expect("the driver runs");
+        }
+        peer_write
+            .write_all(&[0x68, 0x04, 0x01, 0x00, WINDOW.saturating_mul(2), 0x00])
+            .await
+            .expect("the peer writes");
+        // Until the window opens, the refused ASDUs come back and the frames sent are recorded. A
+        // refusal comes before the window opens: once it is open, nothing is refused.
+        let mut refused = Vec::new();
+        let mut opened = false;
+        while !opened {
+            tokio::select! {
+                delivery = deliveries.recv() => match delivery {
+                    Some(Delivery::Rejected(Rejection::WindowFull(asdu))) => refused.push(asdu),
+                    Some(Delivery::Window) => opened = true,
+                    Some(_) => {}
+                    None => panic!("round {round}: the driver stopped"),
+                },
+                frame = next_frame(&mut frames) => sent.push(numbered_frame(&frame)),
+            }
+        }
+        // The station sends the refused ASDUs again, in order, and the window takes them.
+        for asdu in refused {
+            commands
+                .send(Command::SendAsdu(asdu))
+                .await
+                .expect("the driver runs");
+        }
+        let total = usize::from(WINDOW.saturating_add(2));
+        while sent.len() < total {
+            let frame = timeout(Duration::from_secs(5), next_frame(&mut frames))
+                .await
+                .unwrap_or_else(|_| panic!("round {round}: a frame is missing"));
+            sent.push(numbered_frame(&frame));
+        }
+        let expected: Vec<(u8, u16)> = (0..WINDOW.saturating_add(2))
+            .map(|index| (index, u16::from(index)))
+            .collect();
+        assert_eq!(
+            sent, expected,
+            "round {round}: an ASDU overtook a refused one"
+        );
+        drop(commands);
+        let _ = task.await.expect("the task does not panic");
     }
 }

@@ -64,6 +64,7 @@ fn station() -> (Arc<Station<Accept>>, ServerHandle) {
         handler: Accept,
         link: LinkConfig::new(Role::Controlled, parameters()).expect("valid parameters"),
         common_address,
+        served: Arc::from([common_address]),
         initialization: Coi::new(0, false).expect("a cause"),
         selection_timeout: Duration::from_secs(30),
         stop: tokio::sync::watch::Sender::new(false),
@@ -71,6 +72,7 @@ fn station() -> (Arc<Station<Accept>>, ServerHandle) {
     });
     let handle = ServerHandle {
         common_address,
+        served: Arc::from([common_address]),
         groups,
     };
     handle

@@ -14,6 +14,7 @@
 //! the driver. Time is read from tokio's clock, so `tokio::time::pause` drives
 //! every timer in tests.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
@@ -197,17 +198,22 @@ async fn drive<S: Transport>(
     report_transmissions: bool,
     report_window: bool,
 ) -> Result<(), TransportError> {
+    // The commands taken from the channel ahead of their turn: those that are not ASDUs (see below).
+    let mut ahead: VecDeque<Command> = VecDeque::new();
     loop {
-        let event = tokio::select! {
-            read = read_chunk(stream) => match read.map_err(TransportError::Io)? {
-                Some(bytes) => Event::Received(bytes),
-                None => return Err(TransportError::PeerClosed),
+        let event = match ahead.pop_front() {
+            Some(command) => event_of(command),
+            None => tokio::select! {
+                read = read_chunk(stream) => match read.map_err(TransportError::Io)? {
+                    Some(bytes) => Event::Received(bytes),
+                    None => return Err(TransportError::PeerClosed),
+                },
+                command = commands.recv() => match command {
+                    Some(command) => event_of(command),
+                    None => return Ok(()),
+                },
+                () = wait_until(session.next_deadline()) => Event::Tick,
             },
-            command = commands.recv() => match command {
-                Some(command) => event_of(command),
-                None => return Ok(()),
-            },
-            () = wait_until(session.next_deadline()) => Event::Tick,
         };
         let outstanding = session.outstanding();
         for action in session.handle(event, now()) {
@@ -227,12 +233,29 @@ async fn drive<S: Transport>(
                     }
                 }
                 Action::Rejected(rejection) => {
+                    let window_full = matches!(rejection, Rejection::WindowFull(_));
                     if deliveries
                         .send(Delivery::Rejected(rejection))
                         .await
                         .is_err()
                     {
                         return Ok(());
+                    }
+                    if window_full && report_window {
+                        // The ASDUs queued behind the refused one are refused too, in their order. An
+                        // acknowledgement could open the window before they are taken, and they would
+                        // overtake the refused ASDU, which the station sends again later (§10.5).
+                        while let Ok(command) = commands.try_recv() {
+                            match command {
+                                Command::SendAsdu(asdu) => {
+                                    let refused = Delivery::Rejected(Rejection::WindowFull(asdu));
+                                    if deliveries.send(refused).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                                other => ahead.push_back(other),
+                            }
+                        }
                     }
                 }
                 Action::Transfer(state) => {

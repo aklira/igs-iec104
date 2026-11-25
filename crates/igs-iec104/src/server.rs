@@ -13,6 +13,12 @@
 //! group. Each accepted connection runs one APCI session of the controlled role
 //! ([`crate::transport::run`]), and its ASDUs are answered by a [`Responder`].
 //!
+//! One listener can serve several stations, each with its own common address and its own points
+//! ([`ServerConfig::with_station`]). They share the redundancy group of the controlling station:
+//! one started connection carries the events of all of them. An ASDU is answered for the common
+//! address it carries, and an address the listener does not serve is mirrored with cause 46. The
+//! global address is answered for the station of [`ServerConfig::common_address`].
+//!
 //! The events of the image wait in its queue until the started connection takes them. When a
 //! connection is started, the others that are not stopped are closed (§10.7). The events of a
 //! closed connection that the peer did not acknowledge, and those it had not sent yet, are
@@ -45,7 +51,7 @@ use crate::clock;
 use crate::error::TransportError;
 use crate::process_image::{PointValue, ProcessError, ProcessImage, Update};
 use crate::tls::Secure;
-use crate::transport::{run, secure_server, without_delay, Command, Delivery, Transport};
+use crate::transport::{run_shared, secure_server, without_delay, Command, Delivery, Transport};
 
 pub mod respond;
 
@@ -70,6 +76,9 @@ pub struct ServerConfig {
     /// The common address of the station. A request to the global address is answered
     /// with it.
     pub common_address: CommonAddress,
+    /// The other common addresses the same listener serves, with their own points (see
+    /// [`ServerConfig::with_station`]). Empty for a station of one common address.
+    pub additional_stations: Vec<CommonAddress>,
     /// The timeouts and window sizes of each connection (§9.6).
     pub parameters: Parameters,
     /// The cause of initialization that the end of initialization reports (0 to 127): 0 for
@@ -100,6 +109,7 @@ impl ServerConfig {
         Self {
             bind,
             common_address,
+            additional_stations: Vec::new(),
             parameters: Parameters::default(),
             initialization_cause: 0,
             selection_timeout: DEFAULT_SELECTION_TIMEOUT,
@@ -114,6 +124,16 @@ impl ServerConfig {
     #[must_use]
     pub fn with_events(mut self, capacity: NonZeroUsize) -> Self {
         self.events = Some(capacity);
+        self
+    }
+
+    /// Serves one more common address on the same listener, with its own points: the
+    /// connections of the listener share one redundancy group, and each station answers the
+    /// requests for its own common address, from its own points. An address the listener
+    /// already serves, or the global address, is refused by [`Server::bind`].
+    #[must_use]
+    pub fn with_station(mut self, common_address: CommonAddress) -> Self {
+        self.additional_stations.push(common_address);
         self
     }
 }
@@ -209,6 +229,9 @@ pub enum ServerError {
     Initialization(u8),
     /// The process image refused its setup.
     Process(ProcessError),
+    /// An additional common address is the global address, the common address of the station,
+    /// or given twice (see [`ServerConfig::with_station`]).
+    Station(CommonAddress),
     /// The address cannot be bound.
     Io(io::Error),
 }
@@ -221,6 +244,11 @@ impl fmt::Display for ServerError {
                 write!(f, "the cause of initialization {cause} is out of range")
             }
             Self::Process(error) => write!(f, "{error}"),
+            Self::Station(common) => write!(
+                f,
+                "the common address {} cannot be an additional station of the listener",
+                common.value()
+            ),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -448,7 +476,10 @@ struct Station<H> {
     groups: Arc<Groups>,
     handler: H,
     link: LinkConfig,
+    /// The common address of the station: it answers the global address.
     common_address: CommonAddress,
+    /// Every common address the listener serves, the station's first.
+    served: Arc<[CommonAddress]>,
     initialization: Coi,
     selection_timeout: Duration,
     /// Set to true when the station stops (task U1): each connection sends what it has, then
@@ -546,6 +577,14 @@ impl<H: Handler> Server<H> {
         let initialization = Coi::new(config.initialization_cause, false)
             .ok_or(ServerError::Initialization(config.initialization_cause))?;
         let template = ProcessImage::new(config.event_capacity).map_err(ServerError::Process)?;
+        let mut served = vec![config.common_address];
+        for common in &config.additional_stations {
+            let taken = common.is_global() || served.contains(common);
+            if taken {
+                return Err(ServerError::Station(*common));
+            }
+            served.push(*common);
+        }
         let listener = TcpListener::bind(config.bind)
             .await
             .map_err(ServerError::Io)?;
@@ -575,6 +614,7 @@ impl<H: Handler> Server<H> {
                 handler,
                 link,
                 common_address: config.common_address,
+                served: served.into(),
                 initialization,
                 selection_timeout: config.selection_timeout,
                 stop: watch::Sender::new(false),
@@ -598,6 +638,7 @@ impl<H: Handler> Server<H> {
     pub fn handle(&self) -> ServerHandle {
         ServerHandle {
             common_address: self.station.common_address,
+            served: Arc::clone(&self.station.served),
             groups: Arc::clone(&self.station.groups),
         }
     }
@@ -681,10 +722,21 @@ async fn close_connections(connections: &mut JoinSet<()>, grace: Duration) -> us
 #[derive(Clone)]
 pub struct ServerHandle {
     common_address: CommonAddress,
+    served: Arc<[CommonAddress]>,
     groups: Arc<Groups>,
 }
 
 impl ServerHandle {
+    /// A handle to the points of the station `common_address`, one of the common addresses the
+    /// listener serves (see [`ServerConfig::with_station`]). `None` for any other address.
+    pub fn station(&self, common_address: CommonAddress) -> Option<Self> {
+        self.served.contains(&common_address).then(|| Self {
+            common_address,
+            served: Arc::clone(&self.served),
+            groups: Arc::clone(&self.groups),
+        })
+    }
+
     /// Registers a point of the station with its initial value (see [`ProcessImage::add_point`]). The
     /// point is registered in every redundancy group.
     pub fn add_point(
@@ -763,18 +815,24 @@ async fn serve<S: Transport + 'static, H: Handler>(
     };
     let (commands_tx, commands_rx) = mpsc::channel::<Command>(CHANNEL);
     let (deliveries_tx, mut deliveries_rx) = mpsc::channel::<Delivery>(CHANNEL);
-    let mut transport = AbortOnDrop(tokio::spawn(run(
-        stream,
-        station.link,
-        commands_rx,
-        deliveries_tx,
-    )));
+    // The transport gives back the command channel when it ends: the ASDUs still queued in it were
+    // taken from the station and must not be lost (see below).
+    let link = station.link;
+    let mut transport = AbortOnDrop(tokio::spawn(async move {
+        let mut commands_rx = commands_rx;
+        let outcome = run_shared(stream, link, &mut commands_rx, &deliveries_tx).await;
+        (outcome, commands_rx)
+    }));
     let mut stopping = station.stop.subscribe();
     let mut connection = Connection {
         station: &station,
         process: Arc::clone(&process),
         id,
-        responder: Responder::new(station.common_address, station.selection_timeout),
+        responder: Responder::with_stations(
+            station.common_address,
+            station.served.get(1..).unwrap_or_default(),
+            station.selection_timeout,
+        ),
         pending: VecDeque::new(),
         returned: VecDeque::new(),
         unacknowledged: Vec::new(),
@@ -833,11 +891,26 @@ async fn serve<S: Transport + 'static, H: Handler>(
     while let Some(delivery) = deliveries_rx.recv().await {
         connection.deliver(delivery);
     }
+    // The ASDUs the transport did not read before it ended stay in its channel. They were taken
+    // from the image before the ones still pending, so they go to the connection that takes over
+    // in their place, after the unacknowledged ones (§10.5).
+    let mut unread = Vec::new();
     closed.end = Some(match (&mut transport.0).await {
-        Ok(Err(error)) => ConnectionEnd::Transport(error),
-        Ok(Ok(())) | Err(_) => ConnectionEnd::Station,
+        Ok((outcome, mut commands_rx)) => {
+            while let Ok(command) = commands_rx.try_recv() {
+                if let Command::SendAsdu(asdu) = command {
+                    unread.push(asdu);
+                }
+            }
+            match outcome {
+                Err(error) => ConnectionEnd::Transport(error),
+                Ok(()) => ConnectionEnd::Station,
+            }
+        }
+        Err(_) => ConnectionEnd::Station,
     });
     let mut leftover = connection.unacknowledged;
+    leftover.extend(unread);
     leftover.extend(connection.returned);
     leftover.extend(connection.pending);
     // The image queues its events with cause 3 (spontaneous). The answers of this connection
@@ -917,12 +990,13 @@ impl<H: Handler> Connection<'_, H> {
                     });
                 }
                 if self.started && !self.initialized {
+                    // Each station of the listener announces its own end of initialization.
                     self.initialized = true;
-                    let end = respond::end_of_initialization(
-                        self.station.common_address,
-                        self.station.initialization,
-                    );
-                    self.pending.extend(end);
+                    for common in self.station.served.iter() {
+                        let end =
+                            respond::end_of_initialization(*common, self.station.initialization);
+                        self.pending.extend(end);
+                    }
                 }
             }
             Delivery::Unacknowledged(asdus) => self.unacknowledged.extend(asdus),

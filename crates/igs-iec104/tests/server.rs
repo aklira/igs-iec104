@@ -18,7 +18,9 @@ use std::time::Duration;
 
 use igs_iec104::client::{Client, ClientConfig, Event};
 use igs_iec104::process_image::{PointValue, Update};
-use igs_iec104::server::{Handler, Operation, Refusal, Server, ServerConfig, ServerHandle};
+use igs_iec104::server::{
+    Handler, Operation, Refusal, Server, ServerConfig, ServerError, ServerHandle,
+};
 use igs_iec104::Delivery;
 use igs_iec104_codec::asdu::{Asdu, Body, InformationObject, Objects};
 use igs_iec104_codec::elements::{
@@ -854,4 +856,272 @@ async fn a_stop_reports_the_end_of_each_connection() {
         matches!(end, Some(ConnectionEnd::Station)),
         "the station closed the connection: {end:?}"
     );
+}
+
+/// The second common address of a listener that serves two stations.
+const SECOND: u16 = 47;
+/// A point that only the second station has.
+const SECOND_ONLY: u32 = 500;
+
+/// A listener that serves `STATION` and `SECOND` on one address. `STATION` has the points of
+/// [`station`]; `SECOND` has a float at the address of [`FLOAT`] with another value, and a single
+/// point at `SECOND_ONLY`.
+async fn two_stations() -> (SocketAddr, ServerHandle) {
+    let config = ServerConfig::new(
+        "127.0.0.1:0".parse().expect("an address"),
+        CommonAddress::new(STATION),
+    )
+    .with_station(CommonAddress::new(SECOND));
+    let server = Server::bind(config, Judge).await.expect("binds");
+    let address = server.local_addr().expect("has an address");
+    let handle = server.handle();
+    handle
+        .add_point(
+            address_of(SINGLE),
+            PointValue::Single(Siq::decode(&[0x00]).expect("off")),
+            false,
+        )
+        .expect("registered");
+    handle
+        .add_point(
+            address_of(FLOAT),
+            PointValue::Float(ShortFloat::from_f32(1.5), quality()),
+            false,
+        )
+        .expect("registered");
+    let second = handle
+        .station(CommonAddress::new(SECOND))
+        .expect("the listener serves the second station");
+    second
+        .add_point(
+            address_of(FLOAT),
+            PointValue::Float(ShortFloat::from_f32(7.5), quality()),
+            false,
+        )
+        .expect("registered");
+    second
+        .add_point(
+            address_of(SECOND_ONLY),
+            PointValue::Single(Siq::decode(&[0x01]).expect("on")),
+            false,
+        )
+        .expect("registered");
+    tokio::spawn(server.run());
+    (address, handle)
+}
+
+fn point_addresses(asdu: &Asdu) -> Vec<u32> {
+    match &asdu.body {
+        Body::M_SP_NA_1(Objects::Individual(items)) => {
+            items.iter().map(|item| item.address.value()).collect()
+        }
+        Body::M_ME_NC_1(Objects::Individual(items)) => {
+            items.iter().map(|item| item.address.value()).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The points of a general interrogation, as (common address, address), sorted. Reads the
+/// answers up to the termination of the interrogation.
+async fn interrogated_points(client: &mut Client) -> Vec<(u16, u32)> {
+    client
+        .interrogate(Qoi::STATION)
+        .await
+        .expect("the client runs");
+    let mut points = Vec::new();
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let event = client.next_event().await.expect("the client runs");
+            if let Event::Delivery(Delivery::Asdu(asdu)) = event {
+                if asdu.cot.cause() == cause::ACTIVATION_TERMINATION {
+                    return;
+                }
+                for address in point_addresses(&asdu) {
+                    points.push((asdu.common_address.value(), address));
+                }
+            }
+        }
+    })
+    .await
+    .expect("the termination within 10 s");
+    points.sort_unstable();
+    points
+}
+
+/// A float answer of station `common` with the value `value`.
+fn float_answer(common: u16, value: f32) -> impl Fn(&Event) -> bool {
+    move |event| match event {
+        Event::Delivery(Delivery::Asdu(asdu))
+            if asdu.common_address == CommonAddress::new(common) =>
+        {
+            match &asdu.body {
+                Body::M_ME_NC_1(Objects::Individual(items)) => items
+                    .iter()
+                    .any(|item| item.value == (ShortFloat::from_f32(value), quality())),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// An end of initialization from station `common`.
+fn end_of_initialization_from(common: u16) -> impl Fn(&Event) -> bool {
+    move |event| match event {
+        Event::Delivery(Delivery::Asdu(asdu)) => {
+            asdu.common_address == CommonAddress::new(common)
+                && is_end_of_initialization(&asdu.body)
+        }
+        _ => false,
+    }
+}
+
+#[tokio::test]
+async fn two_stations_on_one_listener_answer_each_for_its_own_points() {
+    let (address, handle) = two_stations().await;
+    let mut first = started(address, STATION).await;
+    assert_eq!(
+        interrogated_points(&mut first).await,
+        vec![(STATION, SINGLE), (STATION, FLOAT)],
+        "the first station answers its own points only"
+    );
+    // A read of a point of the other station is refused by the first one (cause 47).
+    first
+        .read(address_of(SECOND_ONLY))
+        .await
+        .expect("the client runs");
+    next_until(
+        &mut first,
+        answer(is_read, cause::UNKNOWN_INFO_OBJECT_ADDRESS, true),
+        "the refusal of the read",
+    )
+    .await;
+
+    // The second station is started on the same connection group: the first one is superseded.
+    let mut second = started(address, SECOND).await;
+    assert_eq!(
+        interrogated_points(&mut second).await,
+        vec![(SECOND, SECOND_ONLY), (SECOND, FLOAT)],
+        "the second station answers its own points only"
+    );
+    second
+        .read(address_of(FLOAT))
+        .await
+        .expect("the client runs");
+    next_until(
+        &mut second,
+        float_answer(SECOND, 7.5),
+        "the float of the second station, with its own value",
+    )
+    .await;
+    assert!(handle.station(CommonAddress::new(48)).is_none());
+}
+
+#[tokio::test]
+async fn a_request_for_an_address_of_neither_station_is_mirrored_with_cause_46() {
+    let (address, _) = two_stations().await;
+    let mut client = started(address, 48).await;
+    client
+        .interrogate(Qoi::STATION)
+        .await
+        .expect("the client runs");
+    next_until(
+        &mut client,
+        answer(is_interrogation, cause::UNKNOWN_COMMON_ADDRESS, true),
+        "the mirror of the interrogation",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn the_global_address_is_answered_for_the_first_station() {
+    let (address, _) = two_stations().await;
+    let mut client = Client::connect(ClientConfig::new(address, CommonAddress::GLOBAL));
+    next_until(&mut client, connected, "the connection").await;
+    client.start_data_transfer().await.expect("the client runs");
+    next_until(
+        &mut client,
+        transfer(TransferState::Started),
+        "the start confirmation",
+    )
+    .await;
+    assert_eq!(
+        interrogated_points(&mut client).await,
+        vec![(STATION, SINGLE), (STATION, FLOAT)]
+    );
+}
+
+#[tokio::test]
+async fn the_stations_of_one_listener_share_a_redundancy_group_and_each_announces_its_start() {
+    // Both stations are one redundancy group (§10.2): the connection that starts carries the
+    // events of both, and each station announces its end of initialization on it (§7.3.3.1).
+    let (address, handle) = two_stations().await;
+    let mut first = started(address, STATION).await;
+    next_until(
+        &mut first,
+        end_of_initialization_from(STATION),
+        "the end of initialization of the first station",
+    )
+    .await;
+    let mut second = started(address, SECOND).await;
+    next_until(
+        &mut second,
+        end_of_initialization_from(SECOND),
+        "the end of initialization of the second station",
+    )
+    .await;
+    next_until(
+        &mut first,
+        |event| matches!(event, Event::Disconnected(_)),
+        "the close of the first connection",
+    )
+    .await;
+
+    let first_value = PointValue::Float(ShortFloat::from_f32(2.5), quality());
+    let second_value = PointValue::Float(ShortFloat::from_f32(3.5), quality());
+    handle
+        .update(address_of(FLOAT), first_value, time())
+        .expect("changed");
+    handle
+        .station(CommonAddress::new(SECOND))
+        .expect("served")
+        .update(address_of(FLOAT), second_value, time())
+        .expect("changed");
+    next_until(
+        &mut second,
+        float_answer(STATION, 2.5),
+        "the change of the first station",
+    )
+    .await;
+    next_until(
+        &mut second,
+        float_answer(SECOND, 3.5),
+        "the change of the second station",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_listener_refuses_an_additional_station_that_is_global_or_repeated() {
+    let base = || {
+        ServerConfig::new(
+            "127.0.0.1:0".parse().expect("an address"),
+            CommonAddress::new(STATION),
+        )
+    };
+    let refused = [
+        base().with_station(CommonAddress::new(STATION)),
+        base().with_station(CommonAddress::GLOBAL),
+        base()
+            .with_station(CommonAddress::new(SECOND))
+            .with_station(CommonAddress::new(SECOND)),
+    ];
+    for config in refused {
+        match Server::bind(config, Judge).await {
+            Err(ServerError::Station(_)) => {}
+            Err(other) => panic!("another refusal: {other}"),
+            Ok(_) => panic!("a listener with a repeated or global station is bound"),
+        }
+    }
 }
